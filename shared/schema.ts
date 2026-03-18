@@ -17,12 +17,26 @@ export const activityCategories = [
 
 export type ActivityCategory = (typeof activityCategories)[number];
 
+export const leaveTypes = [
+  "Annual Leave",
+  "Bank Holiday",
+  "Sick Leave",
+  "Unpaid Leave",
+  "Other",
+] as const;
+
+export type LeaveType = (typeof leaveTypes)[number];
+
+export const leaveStatuses = ["pending", "approved", "rejected", "cancelled"] as const;
+export type LeaveStatus = (typeof leaveStatuses)[number];
+
 export const users = pgTable("users", {
   id: serial("id").primaryKey(),
   name: text("name").notNull(),
   email: text("email").notNull(),
   password: text("password").notNull(),
   role: text("role").notNull().default("engineer"),
+  holidayAllowance: integer("holiday_allowance").default(28),
 });
 
 export const timeEntries = pgTable("time_entries", {
@@ -50,9 +64,24 @@ export const savedAddresses = pgTable("saved_addresses", {
   addedBy: text("added_by").notNull(),
 });
 
+export const leaveRequests = pgTable("leave_requests", {
+  id: serial("id").primaryKey(),
+  userId: integer("user_id").notNull(),
+  employeeName: text("employee_name").notNull(),
+  leaveType: text("leave_type").notNull(),
+  startDate: text("start_date").notNull(),
+  endDate: text("end_date").notNull(),
+  totalDays: integer("total_days").notNull(),
+  reason: text("reason"),
+  status: text("status").notNull().default("pending"),
+  reviewedBy: text("reviewed_by"),
+  createdAt: text("created_at").notNull(),
+});
+
 export const insertUserSchema = createInsertSchema(users).omit({ id: true });
 export const insertTimeEntrySchema = createInsertSchema(timeEntries).omit({ id: true });
 export const insertAddressSchema = createInsertSchema(savedAddresses).omit({ id: true });
+export const insertLeaveRequestSchema = createInsertSchema(leaveRequests).omit({ id: true });
 
 export const loginSchema = z.object({
   email: z.string().email(),
@@ -66,9 +95,23 @@ export const registerSchema = z.object({
   role: z.enum(["admin", "engineer"]).default("engineer"),
 });
 
+export const changePasswordSchema = z.object({
+  currentPassword: z.string().min(4),
+  newPassword: z.string().min(4),
+});
+
+export const leaveRequestSchema = z.object({
+  leaveType: z.enum(["Annual Leave", "Bank Holiday", "Sick Leave", "Unpaid Leave", "Other"]),
+  startDate: z.string(),
+  endDate: z.string(),
+  reason: z.string().optional(),
+});
+
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
 export type InsertTimeEntry = z.infer<typeof insertTimeEntrySchema>;
 export type TimeEntry = typeof timeEntries.$inferSelect;
 export type InsertAddress = z.infer<typeof insertAddressSchema>;
 export type SavedAddress = typeof savedAddresses.$inferSelect;
+export type InsertLeaveRequest = z.infer<typeof insertLeaveRequestSchema>;
+export type LeaveRequest = typeof leaveRequests.$inferSelect;

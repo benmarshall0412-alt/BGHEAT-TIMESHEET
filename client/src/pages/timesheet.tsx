@@ -11,7 +11,7 @@ import {
   Play, Square, MapPin, Clock, ChevronLeft, ChevronRight,
   Truck, ShoppingBag, GraduationCap, Building2, Wrench, Flame,
   Fuel, Zap, Settings, Coffee, Trash2, Navigation, LogOut, Shield,
-  Plus, BookMarked, X, Check
+  Plus, BookMarked, X, Check, TreePalm, User
 } from "lucide-react";
 import { format, addDays, subDays, startOfWeek, endOfWeek } from "date-fns";
 import { Link } from "wouter";
@@ -192,10 +192,11 @@ export default function TimesheetPage({ user, onLogout }: { user: AuthUser; onLo
             <button onClick={() => setGpsEnabled(!gpsEnabled)} className={`flex items-center gap-1 text-xs px-2 py-1 rounded-full transition-colors ${gpsEnabled ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400" : "bg-muted text-muted-foreground"}`}>
               <Navigation className="w-3 h-3" /> GPS {gpsEnabled ? "On" : "Off"}
             </button>
+            <Link href="/leave"><button className="flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-primary/10 text-primary" data-testid="link-leave"><TreePalm className="w-3 h-3" /> Leave</button></Link>
             {user.role === "admin" && (
               <Link href="/admin"><button className="flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-primary/10 text-primary" data-testid="link-admin"><Shield className="w-3 h-3" /> Admin</button></Link>
             )}
-            <span className="text-sm text-muted-foreground hidden sm:inline">{user.name}</span>
+            <Link href="/settings"><button className="flex items-center gap-1 text-xs px-2 py-1 rounded-full hover:bg-muted" data-testid="link-settings"><User className="w-3 h-3" /></button></Link>
             <Button variant="ghost" size="icon" onClick={onLogout} data-testid="button-logout"><LogOut className="w-4 h-4" /></Button>
           </div>
         </div>

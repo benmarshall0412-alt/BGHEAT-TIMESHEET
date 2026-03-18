@@ -1,31 +1,125 @@
 import type { Express } from "express";
 import type { Server } from "http";
 import { storage } from "./storage";
-import { insertTimeEntrySchema, insertAddressSchema, loginSchema, registerSchema } from "@shared/schema";
+import { insertTimeEntrySchema, insertAddressSchema, loginSchema, changePasswordSchema, leaveRequestSchema } from "@shared/schema";
+import { z } from "zod";
+
+// UK Bank Holidays 2026
+const UK_BANK_HOLIDAYS_2026 = [
+  { date: "2026-01-01", name: "New Year's Day" },
+  { date: "2026-04-03", name: "Good Friday" },
+  { date: "2026-04-06", name: "Easter Monday" },
+  { date: "2026-05-04", name: "Early May Bank Holiday" },
+  { date: "2026-05-25", name: "Spring Bank Holiday" },
+  { date: "2026-08-31", name: "Summer Bank Holiday" },
+  { date: "2026-12-25", name: "Christmas Day" },
+  { date: "2026-12-28", name: "Boxing Day (substitute)" },
+];
+
+function calculateWorkingDays(startDate: string, endDate: string): number {
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+  let days = 0;
+  const current = new Date(start);
+  while (current <= end) {
+    const dow = current.getDay();
+    if (dow !== 0 && dow !== 6) days++; // Exclude weekends
+    current.setDate(current.getDate() + 1);
+  }
+  return days;
+}
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<void> {
   // ===== AUTH =====
-  app.post("/api/auth/register", async (req, res) => {
-    const parsed = registerSchema.safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ error: parsed.error.errors });
-    const existing = await storage.getUserByEmail(parsed.data.email);
-    if (existing) return res.status(409).json({ error: "Email already registered" });
-    const user = await storage.createUser({ name: parsed.data.name, email: parsed.data.email, password: parsed.data.password, role: parsed.data.role });
-    res.status(201).json({ id: user.id, name: user.name, email: user.email, role: user.role });
-  });
-
   app.post("/api/auth/login", async (req, res) => {
     const parsed = loginSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.errors });
     const user = await storage.getUserByEmail(parsed.data.email);
     if (!user || user.password !== parsed.data.password) return res.status(401).json({ error: "Invalid email or password" });
-    res.json({ id: user.id, name: user.name, email: user.email, role: user.role });
+    res.json({ id: user.id, name: user.name, email: user.email, role: user.role, holidayAllowance: user.holidayAllowance });
   });
 
-  // ===== USERS =====
+  // ===== CHANGE PASSWORD =====
+  app.post("/api/auth/change-password", async (req, res) => {
+    const { userId, currentPassword, newPassword } = req.body;
+    if (!userId) return res.status(400).json({ error: "userId required" });
+    const parsed = changePasswordSchema.safeParse({ currentPassword, newPassword });
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.errors });
+
+    const user = await storage.getUserById(userId);
+    if (!user) return res.status(404).json({ error: "User not found" });
+    if (user.password !== parsed.data.currentPassword) return res.status(401).json({ error: "Current password is incorrect" });
+
+    await storage.updateUserPassword(userId, parsed.data.newPassword);
+    res.json({ message: "Password changed successfully" });
+  });
+
+  // ===== UPDATE PROFILE =====
+  app.patch("/api/auth/profile", async (req, res) => {
+    const { userId, name, email } = req.body;
+    if (!userId) return res.status(400).json({ error: "userId required" });
+
+    // Check email uniqueness if changing
+    if (email) {
+      const existing = await storage.getUserByEmail(email);
+      if (existing && existing.id !== userId) return res.status(409).json({ error: "Email already in use" });
+    }
+
+    const updated = await storage.updateUser(userId, { name, email });
+    if (!updated) return res.status(404).json({ error: "User not found" });
+    res.json({ id: updated.id, name: updated.name, email: updated.email, role: updated.role, holidayAllowance: updated.holidayAllowance });
+  });
+
+  // ===== USERS (admin) =====
   app.get("/api/users", async (_req, res) => {
     const users = await storage.getAllUsers();
-    res.json(users.map((u) => ({ id: u.id, name: u.name, email: u.email, role: u.role })));
+    res.json(users.map((u) => ({ id: u.id, name: u.name, email: u.email, role: u.role, holidayAllowance: u.holidayAllowance })));
+  });
+
+  // Admin: invite/create user
+  app.post("/api/users", async (req, res) => {
+    const { name, email, password, role, holidayAllowance } = req.body;
+    if (!name || !email || !password) return res.status(400).json({ error: "name, email, password required" });
+    const existing = await storage.getUserByEmail(email);
+    if (existing) return res.status(409).json({ error: "Email already registered" });
+    const user = await storage.createUser({ name, email, password, role: role || "engineer", holidayAllowance: holidayAllowance ?? 28 });
+    res.status(201).json({ id: user.id, name: user.name, email: user.email, role: user.role, holidayAllowance: user.holidayAllowance });
+  });
+
+  // Admin: update user
+  app.patch("/api/users/:id", async (req, res) => {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });
+    const { name, email, role, holidayAllowance } = req.body;
+
+    if (email) {
+      const existing = await storage.getUserByEmail(email);
+      if (existing && existing.id !== id) return res.status(409).json({ error: "Email already in use" });
+    }
+
+    const updated = await storage.updateUser(id, { name, email, role, holidayAllowance });
+    if (!updated) return res.status(404).json({ error: "User not found" });
+    res.json({ id: updated.id, name: updated.name, email: updated.email, role: updated.role, holidayAllowance: updated.holidayAllowance });
+  });
+
+  // Admin: reset user password
+  app.post("/api/users/:id/reset-password", async (req, res) => {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });
+    const { newPassword } = req.body;
+    if (!newPassword || newPassword.length < 4) return res.status(400).json({ error: "Password must be at least 4 characters" });
+    const success = await storage.resetUserPassword(id, newPassword);
+    if (!success) return res.status(404).json({ error: "User not found" });
+    res.json({ message: "Password reset successfully" });
+  });
+
+  // Admin: delete user
+  app.delete("/api/users/:id", async (req, res) => {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });
+    const deleted = await storage.deleteUser(id);
+    if (!deleted) return res.status(404).json({ error: "User not found" });
+    res.status(204).send();
   });
 
   // ===== SAVED ADDRESSES =====
@@ -37,7 +131,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.post("/api/addresses", async (req, res) => {
     const parsed = insertAddressSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.errors });
-    // Check for duplicates by address text
     const existing = await storage.getAllAddresses();
     const dupe = existing.find((a) => a.address.toLowerCase() === parsed.data.address.toLowerCase());
     if (dupe) return res.status(409).json({ error: "Address already saved" });
@@ -123,5 +216,82 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.setHeader("Content-Type", "text/csv");
     res.setHeader("Content-Disposition", `attachment; filename=timesheet-${startDate}-to-${endDate}.csv`);
     res.send(csv);
+  });
+
+  // ===== LEAVE REQUESTS =====
+  app.post("/api/leave", async (req, res) => {
+    const { userId, employeeName, ...rest } = req.body;
+    const parsed = leaveRequestSchema.safeParse(rest);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.errors });
+    if (!userId || !employeeName) return res.status(400).json({ error: "userId and employeeName required" });
+
+    const totalDays = calculateWorkingDays(parsed.data.startDate, parsed.data.endDate);
+    if (totalDays <= 0) return res.status(400).json({ error: "Invalid date range" });
+
+    const leaveRequest = await storage.createLeaveRequest({
+      userId,
+      employeeName,
+      leaveType: parsed.data.leaveType,
+      startDate: parsed.data.startDate,
+      endDate: parsed.data.endDate,
+      totalDays,
+      reason: parsed.data.reason ?? null,
+      status: "pending",
+      reviewedBy: null,
+      createdAt: new Date().toISOString(),
+    });
+    res.status(201).json(leaveRequest);
+  });
+
+  // Get leave requests for a user
+  app.get("/api/leave", async (req, res) => {
+    const { userId } = req.query;
+    if (userId) {
+      const requests = await storage.getLeaveRequestsByUser(Number(userId));
+      return res.json(requests);
+    }
+    // If no userId, return all (admin view)
+    const requests = await storage.getAllLeaveRequests();
+    res.json(requests);
+  });
+
+  // Admin: approve/reject leave request
+  app.patch("/api/leave/:id", async (req, res) => {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });
+    const { status, reviewedBy } = req.body;
+    if (!status || !reviewedBy) return res.status(400).json({ error: "status and reviewedBy required" });
+    if (!["approved", "rejected"].includes(status)) return res.status(400).json({ error: "Status must be approved or rejected" });
+
+    const updated = await storage.updateLeaveRequestStatus(id, status, reviewedBy);
+    if (!updated) return res.status(404).json({ error: "Leave request not found" });
+    res.json(updated);
+  });
+
+  // Cancel leave request (by the user)
+  app.post("/api/leave/:id/cancel", async (req, res) => {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });
+    const cancelled = await storage.cancelLeaveRequest(id);
+    if (!cancelled) return res.status(400).json({ error: "Can only cancel pending requests" });
+    res.json(cancelled);
+  });
+
+  // Get leave summary for a user (approved days used this year)
+  app.get("/api/leave/summary", async (req, res) => {
+    const { userId, year } = req.query;
+    if (!userId || !year) return res.status(400).json({ error: "userId and year required" });
+    const usedDays = await storage.getApprovedLeaveDays(Number(userId), year as string);
+    const user = await storage.getUserById(Number(userId));
+    res.json({
+      usedDays,
+      totalAllowance: user?.holidayAllowance ?? 28,
+      remainingDays: (user?.holidayAllowance ?? 28) - usedDays,
+    });
+  });
+
+  // ===== BANK HOLIDAYS =====
+  app.get("/api/bank-holidays", async (_req, res) => {
+    res.json(UK_BANK_HOLIDAYS_2026);
   });
 }

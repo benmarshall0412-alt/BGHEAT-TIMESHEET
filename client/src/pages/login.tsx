@@ -6,7 +6,6 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { Flame, Loader2 } from "lucide-react";
-import { Link } from "wouter";
 import type { AuthUser } from "@/App";
 
 export default function LoginPage({ onLogin }: { onLogin: (u: AuthUser) => void }) {
@@ -70,17 +69,9 @@ export default function LoginPage({ onLogin }: { onLogin: (u: AuthUser) => void 
             Sign In
           </Button>
         </form>
-        <p className="text-center text-sm text-muted-foreground">
-          No account?{" "}
-          <Link href="/register" className="text-primary hover:underline">
-            Register here
-          </Link>
+        <p className="text-center text-xs text-muted-foreground">
+          Contact your admin if you need an account
         </p>
-        <div className="border-t pt-4">
-          <p className="text-xs text-muted-foreground text-center">
-            Default admin: admin@bgheat.co.uk / admin
-          </p>
-        </div>
       </Card>
     </div>
   );

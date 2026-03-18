@@ -1,13 +1,20 @@
-import type { TimeEntry, InsertTimeEntry, User, InsertUser, SavedAddress, InsertAddress } from "@shared/schema";
+import type { TimeEntry, InsertTimeEntry, User, InsertUser, SavedAddress, InsertAddress, LeaveRequest, InsertLeaveRequest } from "@shared/schema";
 import Database from "better-sqlite3";
 import path from "path";
 import fs from "fs";
 
 export interface IStorage {
+  // Users
   createUser(user: InsertUser): Promise<User>;
   getUserByEmail(email: string): Promise<User | undefined>;
   getUserById(id: number): Promise<User | undefined>;
   getAllUsers(): Promise<User[]>;
+  updateUserPassword(id: number, newPassword: string): Promise<boolean>;
+  updateUser(id: number, data: { name?: string; email?: string; role?: string; holidayAllowance?: number }): Promise<User | undefined>;
+  deleteUser(id: number): Promise<boolean>;
+  resetUserPassword(id: number, newPassword: string): Promise<boolean>;
+
+  // Time entries
   getTimeEntries(userId: number, date: string): Promise<TimeEntry[]>;
   getAllEntriesForDate(date: string): Promise<TimeEntry[]>;
   createTimeEntry(entry: InsertTimeEntry): Promise<TimeEntry>;
@@ -16,9 +23,19 @@ export interface IStorage {
   getRunningEntry(userId: number): Promise<TimeEntry | undefined>;
   getWeekSummary(userId: number, startDate: string, endDate: string): Promise<TimeEntry[]>;
   getEntriesForExport(filters: { startDate: string; endDate: string; userId?: number }): Promise<TimeEntry[]>;
+
+  // Addresses
   getAllAddresses(): Promise<SavedAddress[]>;
   createAddress(addr: InsertAddress): Promise<SavedAddress>;
   deleteAddress(id: number): Promise<boolean>;
+
+  // Leave requests
+  createLeaveRequest(req: InsertLeaveRequest): Promise<LeaveRequest>;
+  getLeaveRequestsByUser(userId: number): Promise<LeaveRequest[]>;
+  getAllLeaveRequests(): Promise<LeaveRequest[]>;
+  updateLeaveRequestStatus(id: number, status: string, reviewedBy: string): Promise<LeaveRequest | undefined>;
+  cancelLeaveRequest(id: number): Promise<LeaveRequest | undefined>;
+  getApprovedLeaveDays(userId: number, year: string): Promise<number>;
 }
 
 /** Map a raw SQLite row (snake_case, integer booleans) to a TimeEntry */
@@ -43,26 +60,39 @@ function rowToTimeEntry(row: any): TimeEntry {
 }
 
 function rowToUser(row: any): User {
-  return { id: row.id, name: row.name, email: row.email, password: row.password, role: row.role };
+  return { id: row.id, name: row.name, email: row.email, password: row.password, role: row.role, holidayAllowance: row.holiday_allowance ?? 28 };
 }
 
 function rowToAddress(row: any): SavedAddress {
   return { id: row.id, name: row.name, address: row.address, addedBy: row.added_by };
 }
 
+function rowToLeaveRequest(row: any): LeaveRequest {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    employeeName: row.employee_name,
+    leaveType: row.leave_type,
+    startDate: row.start_date,
+    endDate: row.end_date,
+    totalDays: row.total_days,
+    reason: row.reason ?? null,
+    status: row.status,
+    reviewedBy: row.reviewed_by ?? null,
+    createdAt: row.created_at,
+  };
+}
+
 export class SqliteStorage implements IStorage {
   private db: Database.Database;
 
   constructor() {
-    // Store database file next to the server code so it persists across restarts
     const dbPath = path.resolve(process.cwd(), "data", "timesheet.db");
-
-    // Ensure the data directory exists
     const dir = path.dirname(dbPath);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
     this.db = new Database(dbPath);
-    this.db.pragma("journal_mode = WAL"); // Better concurrent performance
+    this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
     this.createTables();
     this.seedAdmin();
@@ -75,7 +105,8 @@ export class SqliteStorage implements IStorage {
         name TEXT NOT NULL,
         email TEXT NOT NULL UNIQUE COLLATE NOCASE,
         password TEXT NOT NULL,
-        role TEXT NOT NULL DEFAULT 'engineer'
+        role TEXT NOT NULL DEFAULT 'engineer',
+        holiday_allowance INTEGER DEFAULT 28
       );
 
       CREATE TABLE IF NOT EXISTS time_entries (
@@ -104,24 +135,48 @@ export class SqliteStorage implements IStorage {
         added_by TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS leave_requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        employee_name TEXT NOT NULL,
+        leave_type TEXT NOT NULL,
+        start_date TEXT NOT NULL,
+        end_date TEXT NOT NULL,
+        total_days INTEGER NOT NULL,
+        reason TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        reviewed_by TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users(id)
+      );
+
       CREATE INDEX IF NOT EXISTS idx_entries_user_date ON time_entries(user_id, date);
       CREATE INDEX IF NOT EXISTS idx_entries_date ON time_entries(date);
       CREATE INDEX IF NOT EXISTS idx_entries_running ON time_entries(user_id, is_running);
+      CREATE INDEX IF NOT EXISTS idx_leave_user ON leave_requests(user_id);
+      CREATE INDEX IF NOT EXISTS idx_leave_status ON leave_requests(status);
     `);
+
+    // Migration: add holiday_allowance column if it doesn't exist
+    try {
+      this.db.prepare("SELECT holiday_allowance FROM users LIMIT 1").get();
+    } catch {
+      this.db.exec("ALTER TABLE users ADD COLUMN holiday_allowance INTEGER DEFAULT 28");
+    }
   }
 
   private seedAdmin() {
     const existing = this.db.prepare("SELECT id FROM users WHERE email = ? COLLATE NOCASE").get("admin@bgheat.co.uk");
     if (!existing) {
-      this.db.prepare("INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, ?)").run("Admin", "admin@bgheat.co.uk", "admin", "admin");
+      this.db.prepare("INSERT INTO users (name, email, password, role, holiday_allowance) VALUES (?, ?, ?, ?, ?)").run("Admin", "admin@bgheat.co.uk", "admin", "admin", 28);
     }
   }
 
   // ===== USERS =====
   async createUser(user: InsertUser): Promise<User> {
-    const stmt = this.db.prepare("INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, ?)");
-    const result = stmt.run(user.name, user.email, user.password, user.role ?? "engineer");
-    return { id: Number(result.lastInsertRowid), name: user.name, email: user.email, password: user.password, role: user.role ?? "engineer" };
+    const stmt = this.db.prepare("INSERT INTO users (name, email, password, role, holiday_allowance) VALUES (?, ?, ?, ?, ?)");
+    const result = stmt.run(user.name, user.email, user.password, user.role ?? "engineer", user.holidayAllowance ?? 28);
+    return { id: Number(result.lastInsertRowid), name: user.name, email: user.email, password: user.password, role: user.role ?? "engineer", holidayAllowance: user.holidayAllowance ?? 28 };
   }
 
   async getUserByEmail(email: string): Promise<User | undefined> {
@@ -136,6 +191,34 @@ export class SqliteStorage implements IStorage {
 
   async getAllUsers(): Promise<User[]> {
     return (this.db.prepare("SELECT * FROM users ORDER BY name").all() as any[]).map(rowToUser);
+  }
+
+  async updateUserPassword(id: number, newPassword: string): Promise<boolean> {
+    const result = this.db.prepare("UPDATE users SET password = ? WHERE id = ?").run(newPassword, id);
+    return result.changes > 0;
+  }
+
+  async updateUser(id: number, data: { name?: string; email?: string; role?: string; holidayAllowance?: number }): Promise<User | undefined> {
+    const fields: string[] = [];
+    const values: any[] = [];
+    if (data.name !== undefined) { fields.push("name = ?"); values.push(data.name); }
+    if (data.email !== undefined) { fields.push("email = ?"); values.push(data.email); }
+    if (data.role !== undefined) { fields.push("role = ?"); values.push(data.role); }
+    if (data.holidayAllowance !== undefined) { fields.push("holiday_allowance = ?"); values.push(data.holidayAllowance); }
+    if (fields.length === 0) return this.getUserById(id);
+    values.push(id);
+    this.db.prepare(`UPDATE users SET ${fields.join(", ")} WHERE id = ?`).run(...values);
+    return this.getUserById(id);
+  }
+
+  async deleteUser(id: number): Promise<boolean> {
+    // Don't delete if there are time entries — just soft-check
+    const result = this.db.prepare("DELETE FROM users WHERE id = ?").run(id);
+    return result.changes > 0;
+  }
+
+  async resetUserPassword(id: number, newPassword: string): Promise<boolean> {
+    return this.updateUserPassword(id, newPassword);
   }
 
   // ===== TIME ENTRIES =====
@@ -175,7 +258,6 @@ export class SqliteStorage implements IStorage {
     const existing = this.db.prepare("SELECT * FROM time_entries WHERE id = ?").get(id) as any;
     if (!existing) return undefined;
 
-    // Build dynamic SET clause from provided fields
     const fields: string[] = [];
     const values: any[] = [];
     const fieldMap: Record<string, string> = {
@@ -237,6 +319,59 @@ export class SqliteStorage implements IStorage {
   async deleteAddress(id: number): Promise<boolean> {
     const result = this.db.prepare("DELETE FROM saved_addresses WHERE id = ?").run(id);
     return result.changes > 0;
+  }
+
+  // ===== LEAVE REQUESTS =====
+  async createLeaveRequest(req: InsertLeaveRequest): Promise<LeaveRequest> {
+    const stmt = this.db.prepare(`
+      INSERT INTO leave_requests (user_id, employee_name, leave_type, start_date, end_date, total_days, reason, status, reviewed_by, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const result = stmt.run(
+      req.userId, req.employeeName, req.leaveType, req.startDate, req.endDate,
+      req.totalDays, req.reason ?? null, req.status ?? "pending", req.reviewedBy ?? null, req.createdAt
+    );
+    return {
+      id: Number(result.lastInsertRowid),
+      userId: req.userId, employeeName: req.employeeName, leaveType: req.leaveType,
+      startDate: req.startDate, endDate: req.endDate, totalDays: req.totalDays,
+      reason: req.reason ?? null, status: req.status ?? "pending", reviewedBy: req.reviewedBy ?? null,
+      createdAt: req.createdAt,
+    };
+  }
+
+  async getLeaveRequestsByUser(userId: number): Promise<LeaveRequest[]> {
+    return (this.db.prepare("SELECT * FROM leave_requests WHERE user_id = ? ORDER BY created_at DESC").all(userId) as any[]).map(rowToLeaveRequest);
+  }
+
+  async getAllLeaveRequests(): Promise<LeaveRequest[]> {
+    return (this.db.prepare("SELECT * FROM leave_requests ORDER BY created_at DESC").all() as any[]).map(rowToLeaveRequest);
+  }
+
+  async updateLeaveRequestStatus(id: number, status: string, reviewedBy: string): Promise<LeaveRequest | undefined> {
+    const existing = this.db.prepare("SELECT * FROM leave_requests WHERE id = ?").get(id) as any;
+    if (!existing) return undefined;
+    this.db.prepare("UPDATE leave_requests SET status = ?, reviewed_by = ? WHERE id = ?").run(status, reviewedBy, id);
+    const updated = this.db.prepare("SELECT * FROM leave_requests WHERE id = ?").get(id) as any;
+    return rowToLeaveRequest(updated);
+  }
+
+  async cancelLeaveRequest(id: number): Promise<LeaveRequest | undefined> {
+    const existing = this.db.prepare("SELECT * FROM leave_requests WHERE id = ?").get(id) as any;
+    if (!existing) return undefined;
+    if (existing.status !== "pending") return undefined; // Can only cancel pending
+    this.db.prepare("UPDATE leave_requests SET status = 'cancelled' WHERE id = ?").run(id);
+    const updated = this.db.prepare("SELECT * FROM leave_requests WHERE id = ?").get(id) as any;
+    return rowToLeaveRequest(updated);
+  }
+
+  async getApprovedLeaveDays(userId: number, year: string): Promise<number> {
+    const row = this.db.prepare(`
+      SELECT COALESCE(SUM(total_days), 0) as total
+      FROM leave_requests
+      WHERE user_id = ? AND status = 'approved' AND start_date LIKE ?
+    `).get(userId, `${year}%`) as any;
+    return row?.total ?? 0;
   }
 }
 

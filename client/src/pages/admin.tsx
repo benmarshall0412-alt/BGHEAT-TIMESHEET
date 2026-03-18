@@ -1,20 +1,24 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { apiRequest } from "@/lib/queryClient";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useToast } from "@/hooks/use-toast";
 import { PerplexityAttribution } from "@/components/PerplexityAttribution";
 import {
   ChevronLeft, ChevronRight, Download, Flame, LogOut, Clock,
   Truck, ShoppingBag, GraduationCap, Building2, Wrench,
-  Fuel, Zap, Settings, Coffee, MapPin, Navigation, ArrowLeft, Users, FileSpreadsheet
+  Fuel, Zap, Settings, Coffee, MapPin, ArrowLeft, Users, FileSpreadsheet,
+  UserPlus, Trash2, KeyRound, CheckCircle2, XCircle, TreePalm, Edit, Save, X
 } from "lucide-react";
 import { format, addDays, subDays, startOfWeek, endOfWeek, subWeeks, addWeeks } from "date-fns";
 import { Link } from "wouter";
-import type { TimeEntry } from "@shared/schema";
+import type { TimeEntry, LeaveRequest } from "@shared/schema";
 import type { AuthUser } from "@/App";
 
 const categoryIcons: Record<string, React.ReactNode> = {
@@ -38,6 +42,13 @@ const categoryColors: Record<string, string> = {
   "Break": "bg-stone-100 text-stone-700 dark:bg-stone-900/30 dark:text-stone-300",
 };
 
+const statusStyles: Record<string, string> = {
+  pending: "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300",
+  approved: "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
+  rejected: "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300",
+  cancelled: "bg-slate-100 text-slate-600 dark:bg-slate-900/30 dark:text-slate-400",
+};
+
 function formatDuration(minutes: number): string {
   if (!minutes) return "0m";
   const h = Math.floor(minutes / 60);
@@ -45,9 +56,54 @@ function formatDuration(minutes: number): string {
   return h === 0 ? `${m}m` : `${h}h ${m}m`;
 }
 
-type UserInfo = { id: number; name: string; email: string; role: string };
+type UserInfo = { id: number; name: string; email: string; role: string; holidayAllowance: number };
 
 export default function AdminPage({ user, onLogout }: { user: AuthUser; onLogout: () => void }) {
+  const { toast } = useToast();
+  const [activeTab, setActiveTab] = useState("timesheets");
+
+  return (
+    <div className="min-h-screen bg-background">
+      <header className="sticky top-0 z-50 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+        <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <Link href="/"><button className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"><ArrowLeft className="w-4 h-4" /> Timesheet</button></Link>
+            <div className="h-4 w-px bg-border" />
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center"><Flame className="w-4 h-4 text-primary-foreground" /></div>
+              <span className="font-semibold text-sm">Admin Dashboard</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-muted-foreground hidden sm:inline">{user.name}</span>
+            <Button variant="ghost" size="icon" onClick={onLogout}><LogOut className="w-4 h-4" /></Button>
+          </div>
+        </div>
+      </header>
+
+      <main className="max-w-5xl mx-auto px-4 py-6">
+        <Tabs value={activeTab} onValueChange={setActiveTab}>
+          <TabsList className="mb-6">
+            <TabsTrigger value="timesheets" data-testid="tab-timesheets"><FileSpreadsheet className="w-4 h-4 mr-1" /> Timesheets</TabsTrigger>
+            <TabsTrigger value="users" data-testid="tab-users"><Users className="w-4 h-4 mr-1" /> Users</TabsTrigger>
+            <TabsTrigger value="leave" data-testid="tab-leave"><TreePalm className="w-4 h-4 mr-1" /> Leave</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="timesheets"><TimesheetsTab user={user} /></TabsContent>
+          <TabsContent value="users"><UsersTab user={user} /></TabsContent>
+          <TabsContent value="leave"><LeaveTab user={user} /></TabsContent>
+        </Tabs>
+
+        <div className="mt-8">
+          <PerplexityAttribution />
+        </div>
+      </main>
+    </div>
+  );
+}
+
+// ===== TIMESHEETS TAB =====
+function TimesheetsTab({ user }: { user: AuthUser }) {
   const [viewMode, setViewMode] = useState<"day" | "week">("day");
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [filterEmployee, setFilterEmployee] = useState("all");
@@ -69,14 +125,12 @@ export default function AdminPage({ user, onLogout }: { user: AuthUser; onLogout
     queryFn: async () => { const r = await apiRequest("GET", `/api/entries/range?startDate=${startDate}&endDate=${endDate}`); return r.json(); },
   });
 
-  // Filter entries
   const filtered = entries.filter(e => {
     if (filterEmployee !== "all" && e.userId !== Number(filterEmployee)) return false;
     if (filterCategory !== "all" && e.category !== filterCategory) return false;
     return true;
   });
 
-  // Group by employee
   const byEmployee = filtered.reduce<Record<string, TimeEntry[]>>((acc, e) => {
     acc[e.employeeName] = acc[e.employeeName] || [];
     acc[e.employeeName].push(e);
@@ -90,9 +144,7 @@ export default function AdminPage({ user, onLogout }: { user: AuthUser; onLogout
   const handleExportCSV = () => {
     const params = new URLSearchParams({ startDate, endDate });
     if (filterEmployee !== "all") params.set("userId", filterEmployee);
-    const url = `/api/export/csv?${params.toString()}`;
-
-    apiRequest("GET", url).then(async (res) => {
+    apiRequest("GET", `/api/export/csv?${params.toString()}`).then(async (res) => {
       const text = await res.text();
       const blob = new Blob([text], { type: "text/csv" });
       const a = document.createElement("a");
@@ -109,147 +161,475 @@ export default function AdminPage({ user, onLogout }: { user: AuthUser; onLogout
 
   const navigateBack = () => setSelectedDate(d => viewMode === "day" ? subDays(d, 1) : subWeeks(d, 1));
   const navigateForward = () => setSelectedDate(d => viewMode === "day" ? addDays(d, 1) : addWeeks(d, 1));
-
   const categories = Array.from(new Set(entries.map(e => e.category))).sort();
 
   return (
-    <div className="min-h-screen bg-background">
-      {/* Header */}
-      <header className="sticky top-0 z-50 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-        <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <Link href="/"><button className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"><ArrowLeft className="w-4 h-4" /> Timesheet</button></Link>
-            <div className="h-4 w-px bg-border" />
-            <div className="flex items-center gap-2">
-              <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center"><Flame className="w-4 h-4 text-primary-foreground" /></div>
-              <span className="font-semibold text-sm">Admin Dashboard</span>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-muted-foreground hidden sm:inline">{user.name}</span>
-            <Button variant="ghost" size="icon" onClick={onLogout}><LogOut className="w-4 h-4" /></Button>
-          </div>
+    <div className="space-y-6">
+      <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Button variant="ghost" size="icon" onClick={navigateBack}><ChevronLeft className="w-5 h-5" /></Button>
+          <p className="font-medium text-sm min-w-[200px] text-center">{displayTitle}</p>
+          <Button variant="ghost" size="icon" onClick={navigateForward}><ChevronRight className="w-5 h-5" /></Button>
         </div>
-      </header>
-
-      <main className="max-w-5xl mx-auto px-4 py-6 space-y-6">
-        {/* Controls */}
-        <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Button variant="ghost" size="icon" onClick={navigateBack}><ChevronLeft className="w-5 h-5" /></Button>
-            <p className="font-medium text-sm min-w-[200px] text-center">{displayTitle}</p>
-            <Button variant="ghost" size="icon" onClick={navigateForward}><ChevronRight className="w-5 h-5" /></Button>
-          </div>
-          <div className="flex items-center gap-2 flex-wrap">
-            <Select value={viewMode} onValueChange={(v) => setViewMode(v as "day" | "week")}>
-              <SelectTrigger className="w-[100px] h-9 text-sm"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="day">Day</SelectItem>
-                <SelectItem value="week">Week</SelectItem>
-              </SelectContent>
-            </Select>
-            <Select value={filterEmployee} onValueChange={setFilterEmployee}>
-              <SelectTrigger className="w-[150px] h-9 text-sm"><SelectValue placeholder="All Employees" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Employees</SelectItem>
-                {users.filter(u => u.role === "engineer" || entries.some(e => e.userId === u.id)).map(u => (
-                  <SelectItem key={u.id} value={String(u.id)}>{u.name}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Select value={filterCategory} onValueChange={setFilterCategory}>
-              <SelectTrigger className="w-[140px] h-9 text-sm"><SelectValue placeholder="All Activities" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Activities</SelectItem>
-                {categories.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
-              </SelectContent>
-            </Select>
-            <Button variant="outline" size="sm" onClick={handleExportCSV} className="h-9" data-testid="button-export-csv">
-              <Download className="w-4 h-4 mr-1" /> Export CSV
-            </Button>
-          </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <Select value={viewMode} onValueChange={(v) => setViewMode(v as "day" | "week")}>
+            <SelectTrigger className="w-[100px] h-9 text-sm"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="day">Day</SelectItem>
+              <SelectItem value="week">Week</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={filterEmployee} onValueChange={setFilterEmployee}>
+            <SelectTrigger className="w-[150px] h-9 text-sm"><SelectValue placeholder="All Employees" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Employees</SelectItem>
+              {users.filter(u => u.role === "engineer" || entries.some(e => e.userId === u.id)).map(u => (
+                <SelectItem key={u.id} value={String(u.id)}>{u.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={filterCategory} onValueChange={setFilterCategory}>
+            <SelectTrigger className="w-[140px] h-9 text-sm"><SelectValue placeholder="All Activities" /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Activities</SelectItem>
+              {categories.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <Button variant="outline" size="sm" onClick={handleExportCSV} className="h-9" data-testid="button-export-csv">
+            <Download className="w-4 h-4 mr-1" /> Export CSV
+          </Button>
         </div>
+      </div>
 
-        {/* Summary Cards */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <Card className="p-4">
-            <div className="flex items-center gap-2 mb-1"><Users className="w-4 h-4 text-muted-foreground" /><span className="text-xs text-muted-foreground font-medium">Employees</span></div>
-            <p className="text-xl font-semibold">{Object.keys(byEmployee).length}</p>
-          </Card>
-          <Card className="p-4">
-            <div className="flex items-center gap-2 mb-1"><FileSpreadsheet className="w-4 h-4 text-muted-foreground" /><span className="text-xs text-muted-foreground font-medium">Entries</span></div>
-            <p className="text-xl font-semibold">{totalEntries}</p>
-          </Card>
-          <Card className="p-4">
-            <div className="flex items-center gap-2 mb-1"><Clock className="w-4 h-4 text-muted-foreground" /><span className="text-xs text-muted-foreground font-medium">Total Hours</span></div>
-            <p className="text-xl font-semibold">{formatDuration(totalMinutes)}</p>
-          </Card>
-          <Card className="p-4">
-            <div className="flex items-center gap-2 mb-1"><div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" /><span className="text-xs text-muted-foreground font-medium">Active Now</span></div>
-            <p className="text-xl font-semibold">{activeNow}</p>
-          </Card>
-        </div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <Card className="p-4">
+          <div className="flex items-center gap-2 mb-1"><Users className="w-4 h-4 text-muted-foreground" /><span className="text-xs text-muted-foreground font-medium">Employees</span></div>
+          <p className="text-xl font-semibold">{Object.keys(byEmployee).length}</p>
+        </Card>
+        <Card className="p-4">
+          <div className="flex items-center gap-2 mb-1"><FileSpreadsheet className="w-4 h-4 text-muted-foreground" /><span className="text-xs text-muted-foreground font-medium">Entries</span></div>
+          <p className="text-xl font-semibold">{totalEntries}</p>
+        </Card>
+        <Card className="p-4">
+          <div className="flex items-center gap-2 mb-1"><Clock className="w-4 h-4 text-muted-foreground" /><span className="text-xs text-muted-foreground font-medium">Total Hours</span></div>
+          <p className="text-xl font-semibold">{formatDuration(totalMinutes)}</p>
+        </Card>
+        <Card className="p-4">
+          <div className="flex items-center gap-2 mb-1"><div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" /><span className="text-xs text-muted-foreground font-medium">Active Now</span></div>
+          <p className="text-xl font-semibold">{activeNow}</p>
+        </Card>
+      </div>
 
-        {/* Category breakdown */}
-        {filtered.length > 0 && (
-          <Card className="p-4">
-            <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">Activity Breakdown</h3>
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
-              {Object.entries(filtered.reduce<Record<string, number>>((a, e) => { a[e.category] = (a[e.category] || 0) + (e.durationMinutes || 0); return a; }, {}))
-                .sort(([,a],[,b]) => b - a)
-                .map(([cat, mins]) => (
-                  <div key={cat} className="flex items-center gap-2 p-2 rounded-lg bg-muted/30">
-                    {categoryIcons[cat]}
-                    <div className="min-w-0">
-                      <p className="text-xs font-medium truncate">{cat}</p>
-                      <p className="text-sm font-semibold">{formatDuration(mins)}</p>
-                    </div>
+      {filtered.length > 0 && (
+        <Card className="p-4">
+          <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">Activity Breakdown</h3>
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
+            {Object.entries(filtered.reduce<Record<string, number>>((a, e) => { a[e.category] = (a[e.category] || 0) + (e.durationMinutes || 0); return a; }, {}))
+              .sort(([,a],[,b]) => b - a)
+              .map(([cat, mins]) => (
+                <div key={cat} className="flex items-center gap-2 p-2 rounded-lg bg-muted/30">
+                  {categoryIcons[cat]}
+                  <div className="min-w-0">
+                    <p className="text-xs font-medium truncate">{cat}</p>
+                    <p className="text-sm font-semibold">{formatDuration(mins)}</p>
                   </div>
-                ))}
-            </div>
-          </Card>
+                </div>
+              ))}
+          </div>
+        </Card>
+      )}
+
+      <div className="space-y-4">
+        <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Entries by Employee</h2>
+        {isLoading ? (
+          <div className="space-y-3">{[1,2].map(i => <Card key={i} className="p-4 animate-pulse"><div className="h-4 bg-muted rounded w-1/3 mb-2" /><div className="h-3 bg-muted rounded w-1/2" /></Card>)}</div>
+        ) : Object.keys(byEmployee).length === 0 ? (
+          <Card className="p-8 text-center"><Users className="w-8 h-8 text-muted-foreground mx-auto mb-2" /><p className="text-sm text-muted-foreground">No entries for this period</p></Card>
+        ) : (
+          Object.entries(byEmployee).sort(([a],[b]) => a.localeCompare(b)).map(([name, empEntries]) => {
+            const empTotal = empEntries.reduce((s, e) => s + (e.durationMinutes || 0), 0);
+            const isActive = empEntries.some(e => e.isRunning);
+            return (
+              <Card key={name} className="p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <h3 className="font-semibold text-sm">{name}</h3>
+                    {isActive && <span className="inline-flex items-center gap-1 text-xs text-green-600 dark:text-green-400 font-medium"><div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />On site</span>}
+                  </div>
+                  <span className="text-sm font-semibold">{formatDuration(empTotal)}</span>
+                </div>
+                <div className="space-y-1.5">
+                  {empEntries.sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime)).map(entry => (
+                    <div key={entry.id} className="flex items-center gap-2 text-sm py-1.5 border-b last:border-b-0">
+                      {viewMode === "week" && <span className="text-xs text-muted-foreground w-16 shrink-0">{format(new Date(entry.date + "T00:00"), "EEE d")}</span>}
+                      <Badge className={`text-xs shrink-0 ${categoryColors[entry.category] || ""}`}>{categoryIcons[entry.category]}<span className="ml-1">{entry.category}</span></Badge>
+                      <span className="text-muted-foreground text-xs">{entry.startTime}{entry.endTime ? `-${entry.endTime}` : ""}</span>
+                      {entry.durationMinutes != null && <span className="text-xs font-medium">{formatDuration(entry.durationMinutes)}</span>}
+                      {entry.siteName && <span className="text-xs text-muted-foreground truncate flex items-center gap-0.5"><MapPin className="w-3 h-3 shrink-0" />{entry.siteName}</span>}
+                      {entry.isRunning && <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse shrink-0" />}
+                    </div>
+                  ))}
+                </div>
+              </Card>
+            );
+          })
         )}
+      </div>
+    </div>
+  );
+}
 
-        {/* Entries by Employee */}
-        <div className="space-y-4">
-          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Entries by Employee</h2>
-          {isLoading ? (
-            <div className="space-y-3">{[1,2].map(i => <Card key={i} className="p-4 animate-pulse"><div className="h-4 bg-muted rounded w-1/3 mb-2" /><div className="h-3 bg-muted rounded w-1/2" /></Card>)}</div>
-          ) : Object.keys(byEmployee).length === 0 ? (
-            <Card className="p-8 text-center"><Users className="w-8 h-8 text-muted-foreground mx-auto mb-2" /><p className="text-sm text-muted-foreground">No entries for this period</p></Card>
-          ) : (
-            Object.entries(byEmployee).sort(([a],[b]) => a.localeCompare(b)).map(([name, empEntries]) => {
-              const empTotal = empEntries.reduce((s, e) => s + (e.durationMinutes || 0), 0);
-              const isActive = empEntries.some(e => e.isRunning);
-              return (
-                <Card key={name} className="p-4 space-y-3">
-                  <div className="flex items-center justify-between">
+// ===== USERS TAB =====
+function UsersTab({ user }: { user: AuthUser }) {
+  const { toast } = useToast();
+  const [showInviteForm, setShowInviteForm] = useState(false);
+  const [inviteName, setInviteName] = useState("");
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [invitePassword, setInvitePassword] = useState("");
+  const [inviteRole, setInviteRole] = useState("engineer");
+  const [inviteHoliday, setInviteHoliday] = useState("28");
+
+  const [editingUser, setEditingUser] = useState<number | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editEmail, setEditEmail] = useState("");
+  const [editRole, setEditRole] = useState("");
+  const [editHoliday, setEditHoliday] = useState("");
+
+  const [resetPwUser, setResetPwUser] = useState<number | null>(null);
+  const [resetPwValue, setResetPwValue] = useState("");
+
+  const { data: users = [] } = useQuery<UserInfo[]>({
+    queryKey: ["/api/users"],
+    queryFn: async () => { const r = await apiRequest("GET", "/api/users"); return r.json(); },
+  });
+
+  const inviteMutation = useMutation({
+    mutationFn: async () => {
+      const r = await apiRequest("POST", "/api/users", {
+        name: inviteName, email: inviteEmail, password: invitePassword,
+        role: inviteRole, holidayAllowance: parseInt(inviteHoliday) || 28,
+      });
+      if (!r.ok) { const e = await r.json(); throw new Error(e.error || "Failed"); }
+      return r.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+      setShowInviteForm(false);
+      setInviteName(""); setInviteEmail(""); setInvitePassword(""); setInviteRole("engineer"); setInviteHoliday("28");
+      toast({ title: "User created", description: "New user has been added." });
+    },
+    onError: (err: any) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  const updateMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const r = await apiRequest("PATCH", `/api/users/${id}`, {
+        name: editName, email: editEmail, role: editRole,
+        holidayAllowance: parseInt(editHoliday) || 28,
+      });
+      if (!r.ok) { const e = await r.json(); throw new Error(e.error || "Failed"); }
+      return r.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+      setEditingUser(null);
+      toast({ title: "User updated" });
+    },
+    onError: (err: any) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  const resetPwMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const r = await apiRequest("POST", `/api/users/${id}/reset-password`, { newPassword: resetPwValue });
+      if (!r.ok) { const e = await r.json(); throw new Error(e.error || "Failed"); }
+      return r.json();
+    },
+    onSuccess: () => {
+      setResetPwUser(null);
+      setResetPwValue("");
+      toast({ title: "Password reset", description: "User's password has been reset." });
+    },
+    onError: (err: any) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const r = await apiRequest("DELETE", `/api/users/${id}`);
+      if (!r.ok) { const e = await r.json().catch(() => ({ error: "Failed" })); throw new Error(e.error || "Failed"); }
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/users"] });
+      toast({ title: "User deleted" });
+    },
+    onError: (err: any) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  const startEdit = (u: UserInfo) => {
+    setEditingUser(u.id);
+    setEditName(u.name);
+    setEditEmail(u.email);
+    setEditRole(u.role);
+    setEditHoliday(String(u.holidayAllowance));
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Team Members ({users.length})</h2>
+        <Button size="sm" onClick={() => setShowInviteForm(!showInviteForm)} data-testid="button-invite-user">
+          {showInviteForm ? <X className="w-4 h-4 mr-1" /> : <UserPlus className="w-4 h-4 mr-1" />}
+          {showInviteForm ? "Cancel" : "Add User"}
+        </Button>
+      </div>
+
+      {showInviteForm && (
+        <Card className="p-6">
+          <h3 className="font-semibold mb-4 flex items-center gap-2"><UserPlus className="w-5 h-5 text-primary" /> Add New User</h3>
+          <form onSubmit={(e) => { e.preventDefault(); inviteMutation.mutate(); }} className="space-y-4">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-2">
+                <Label>Name</Label>
+                <Input value={inviteName} onChange={e => setInviteName(e.target.value)} placeholder="John Smith" data-testid="input-invite-name" />
+              </div>
+              <div className="space-y-2">
+                <Label>Email</Label>
+                <Input type="email" value={inviteEmail} onChange={e => setInviteEmail(e.target.value)} placeholder="john@bgheat.co.uk" data-testid="input-invite-email" />
+              </div>
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              <div className="space-y-2">
+                <Label>Password</Label>
+                <Input value={invitePassword} onChange={e => setInvitePassword(e.target.value)} placeholder="Initial password" data-testid="input-invite-password" />
+              </div>
+              <div className="space-y-2">
+                <Label>Role</Label>
+                <Select value={inviteRole} onValueChange={setInviteRole}>
+                  <SelectTrigger data-testid="select-invite-role"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="engineer">Engineer</SelectItem>
+                    <SelectItem value="admin">Admin</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>Holiday Days</Label>
+                <Input type="number" value={inviteHoliday} onChange={e => setInviteHoliday(e.target.value)} data-testid="input-invite-holiday" />
+              </div>
+            </div>
+            <Button type="submit" disabled={inviteMutation.isPending} data-testid="button-submit-invite">
+              {inviteMutation.isPending ? "Creating..." : "Create User"}
+            </Button>
+          </form>
+        </Card>
+      )}
+
+      <div className="space-y-3">
+        {users.map(u => (
+          <Card key={u.id} className="p-4" data-testid={`card-user-${u.id}`}>
+            {editingUser === u.id ? (
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <Input value={editName} onChange={e => setEditName(e.target.value)} placeholder="Name" data-testid="input-edit-name" />
+                  <Input value={editEmail} onChange={e => setEditEmail(e.target.value)} placeholder="Email" data-testid="input-edit-email" />
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <Select value={editRole} onValueChange={setEditRole}>
+                    <SelectTrigger data-testid="select-edit-role"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="engineer">Engineer</SelectItem>
+                      <SelectItem value="admin">Admin</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <div className="flex items-center gap-2">
+                    <Label className="text-xs whitespace-nowrap">Holiday days:</Label>
+                    <Input type="number" value={editHoliday} onChange={e => setEditHoliday(e.target.value)} className="w-20" data-testid="input-edit-holiday" />
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <Button size="sm" onClick={() => updateMutation.mutate(u.id)} disabled={updateMutation.isPending} data-testid="button-save-edit">
+                    <Save className="w-4 h-4 mr-1" /> Save
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => setEditingUser(null)} data-testid="button-cancel-edit">
+                    <X className="w-4 h-4 mr-1" /> Cancel
+                  </Button>
+                </div>
+              </div>
+            ) : resetPwUser === u.id ? (
+              <div className="space-y-3">
+                <p className="text-sm font-medium">Reset password for {u.name}</p>
+                <div className="flex gap-2">
+                  <Input value={resetPwValue} onChange={e => setResetPwValue(e.target.value)} placeholder="New password (min 4 chars)" data-testid="input-reset-password" />
+                  <Button size="sm" onClick={() => resetPwMutation.mutate(u.id)} disabled={resetPwMutation.isPending} data-testid="button-confirm-reset">
+                    <Save className="w-4 h-4 mr-1" /> Reset
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => { setResetPwUser(null); setResetPwValue(""); }}>
+                    <X className="w-4 h-4" />
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-full bg-primary/10 flex items-center justify-center text-primary font-semibold text-sm">
+                    {u.name.charAt(0).toUpperCase()}
+                  </div>
+                  <div>
                     <div className="flex items-center gap-2">
-                      <h3 className="font-semibold text-sm">{name}</h3>
-                      {isActive && <span className="inline-flex items-center gap-1 text-xs text-green-600 dark:text-green-400 font-medium"><div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />On site</span>}
+                      <p className="font-medium text-sm">{u.name}</p>
+                      <Badge variant={u.role === "admin" ? "default" : "secondary"} className="text-xs">{u.role}</Badge>
                     </div>
-                    <span className="text-sm font-semibold">{formatDuration(empTotal)}</span>
+                    <p className="text-xs text-muted-foreground">{u.email}</p>
+                    <p className="text-xs text-muted-foreground">{u.holidayAllowance} days holiday/year</p>
                   </div>
-                  <div className="space-y-1.5">
-                    {empEntries.sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime)).map(entry => (
-                      <div key={entry.id} className="flex items-center gap-2 text-sm py-1.5 border-b last:border-b-0">
-                        {viewMode === "week" && <span className="text-xs text-muted-foreground w-16 shrink-0">{format(new Date(entry.date + "T00:00"), "EEE d")}</span>}
-                        <Badge className={`text-xs shrink-0 ${categoryColors[entry.category] || ""}`}>{categoryIcons[entry.category]}<span className="ml-1">{entry.category}</span></Badge>
-                        <span className="text-muted-foreground text-xs">{entry.startTime}{entry.endTime ? `-${entry.endTime}` : ""}</span>
-                        {entry.durationMinutes != null && <span className="text-xs font-medium">{formatDuration(entry.durationMinutes)}</span>}
-                        {entry.siteName && <span className="text-xs text-muted-foreground truncate flex items-center gap-0.5"><MapPin className="w-3 h-3 shrink-0" />{entry.siteName}</span>}
-                        {entry.isRunning && <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse shrink-0" />}
-                      </div>
-                    ))}
-                  </div>
-                </Card>
-              );
-            })
+                </div>
+                <div className="flex items-center gap-1">
+                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => startEdit(u)} data-testid={`button-edit-${u.id}`}>
+                    <Edit className="w-3.5 h-3.5" />
+                  </Button>
+                  <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setResetPwUser(u.id)} data-testid={`button-reset-pw-${u.id}`}>
+                    <KeyRound className="w-3.5 h-3.5" />
+                  </Button>
+                  {u.id !== user.id && (
+                    <Button variant="ghost" size="icon" className="h-8 w-8 text-red-600 hover:text-red-700 hover:bg-red-50" onClick={() => deleteMutation.mutate(u.id)} data-testid={`button-delete-${u.id}`}>
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </Button>
+                  )}
+                </div>
+              </div>
+            )}
+          </Card>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ===== LEAVE TAB =====
+function LeaveTab({ user }: { user: AuthUser }) {
+  const { toast } = useToast();
+  const [filterStatus, setFilterStatus] = useState("pending");
+
+  const { data: allRequests = [] } = useQuery<LeaveRequest[]>({
+    queryKey: ["/api/leave"],
+    queryFn: async () => { const r = await apiRequest("GET", "/api/leave"); return r.json(); },
+  });
+
+  const { data: bankHolidays = [] } = useQuery<{ date: string; name: string }[]>({
+    queryKey: ["/api/bank-holidays"],
+    queryFn: async () => { const r = await apiRequest("GET", "/api/bank-holidays"); return r.json(); },
+  });
+
+  const approveMutation = useMutation({
+    mutationFn: async ({ id, status }: { id: number; status: string }) => {
+      const r = await apiRequest("PATCH", `/api/leave/${id}`, { status, reviewedBy: user.name });
+      if (!r.ok) { const e = await r.json(); throw new Error(e.error || "Failed"); }
+      return r.json();
+    },
+    onSuccess: (_, vars) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/leave"] });
+      toast({ title: vars.status === "approved" ? "Leave approved" : "Leave rejected" });
+    },
+    onError: (err: any) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  const filtered = filterStatus === "all"
+    ? allRequests
+    : allRequests.filter(r => r.status === filterStatus);
+
+  const pendingCount = allRequests.filter(r => r.status === "pending").length;
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Leave Requests</h2>
+          {pendingCount > 0 && (
+            <Badge className="bg-amber-100 text-amber-800">{pendingCount} pending</Badge>
           )}
         </div>
+        <Select value={filterStatus} onValueChange={setFilterStatus}>
+          <SelectTrigger className="w-[130px] h-9 text-sm" data-testid="select-leave-filter"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="pending">Pending</SelectItem>
+            <SelectItem value="approved">Approved</SelectItem>
+            <SelectItem value="rejected">Rejected</SelectItem>
+            <SelectItem value="cancelled">Cancelled</SelectItem>
+            <SelectItem value="all">All</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
 
-        <PerplexityAttribution />
-      </main>
+      {filtered.length === 0 ? (
+        <Card className="p-8 text-center">
+          <TreePalm className="w-8 h-8 text-muted-foreground mx-auto mb-2" />
+          <p className="text-sm text-muted-foreground">No {filterStatus !== "all" ? filterStatus : ""} leave requests</p>
+        </Card>
+      ) : (
+        <div className="space-y-3">
+          {filtered.map(req => (
+            <Card key={req.id} className="p-4" data-testid={`card-admin-leave-${req.id}`}>
+              <div className="flex items-start justify-between">
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-2">
+                    <div className="w-7 h-7 rounded-full bg-primary/10 flex items-center justify-center text-primary font-semibold text-xs">
+                      {req.employeeName.charAt(0).toUpperCase()}
+                    </div>
+                    <span className="font-medium text-sm">{req.employeeName}</span>
+                    <Badge className={statusStyles[req.status]}>
+                      <span className="capitalize">{req.status}</span>
+                    </Badge>
+                  </div>
+                  <p className="text-sm">
+                    <span className="font-medium">{req.leaveType}</span>
+                    <span className="text-muted-foreground"> — </span>
+                    {format(new Date(req.startDate + "T00:00"), "d MMM")} to {format(new Date(req.endDate + "T00:00"), "d MMM yyyy")}
+                    <span className="ml-2 text-muted-foreground">({req.totalDays} day{req.totalDays !== 1 ? "s" : ""})</span>
+                  </p>
+                  {req.reason && <p className="text-xs text-muted-foreground">{req.reason}</p>}
+                  {req.reviewedBy && <p className="text-xs text-muted-foreground">Reviewed by: {req.reviewedBy}</p>}
+                  <p className="text-xs text-muted-foreground">Requested: {format(new Date(req.createdAt), "d MMM yyyy, HH:mm")}</p>
+                </div>
+                {req.status === "pending" && (
+                  <div className="flex gap-2 shrink-0">
+                    <Button
+                      size="sm"
+                      className="bg-green-600 hover:bg-green-700 text-white"
+                      onClick={() => approveMutation.mutate({ id: req.id, status: "approved" })}
+                      disabled={approveMutation.isPending}
+                      data-testid={`button-approve-${req.id}`}
+                    >
+                      <CheckCircle2 className="w-4 h-4 mr-1" /> Approve
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="text-red-600 border-red-200 hover:bg-red-50"
+                      onClick={() => approveMutation.mutate({ id: req.id, status: "rejected" })}
+                      disabled={approveMutation.isPending}
+                      data-testid={`button-reject-${req.id}`}
+                    >
+                      <XCircle className="w-4 h-4 mr-1" /> Reject
+                    </Button>
+                  </div>
+                )}
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {/* Bank Holidays Section */}
+      <div className="space-y-3">
+        <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">UK Bank Holidays 2026</h2>
+        <Card className="divide-y">
+          {bankHolidays.map(bh => (
+            <div key={bh.date} className="px-4 py-3 flex items-center justify-between">
+              <span className="text-sm font-medium">{bh.name}</span>
+              <span className="text-sm text-muted-foreground">{format(new Date(bh.date + "T00:00"), "EEEE, d MMMM")}</span>
+            </div>
+          ))}
+        </Card>
+      </div>
     </div>
   );
 }
