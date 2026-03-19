@@ -12,8 +12,8 @@ import { useToast } from "@/hooks/use-toast";
 import { PerplexityAttribution } from "@/components/PerplexityAttribution";
 import {
   ChevronLeft, ChevronRight, Download, Flame, LogOut, Clock,
-  Truck, ShoppingBag, GraduationCap, Building2, Wrench,
-  Fuel, Zap, Settings, Coffee, MapPin, ArrowLeft, Users, FileSpreadsheet,
+  ClipboardCheck, HardHat, Wrench, Settings, Phone, PhoneOff,
+  Truck, ShoppingBag, MapPin, ArrowLeft, Users, FileSpreadsheet,
   UserPlus, Trash2, KeyRound, CheckCircle2, XCircle, TreePalm, Edit, Save, X,
   Activity, Eye, PlayCircle, StopCircle, Navigation, Map as MapIcon
 } from "lucide-react";
@@ -23,24 +23,25 @@ import type { TimeEntry, LeaveRequest, DaySession, GpsWaypoint } from "@shared/s
 import type { AuthUser } from "@/App";
 
 const categoryIcons: Record<string, React.ReactNode> = {
-  "Travel": <Truck className="w-3.5 h-3.5" />, "Merchant Trip": <ShoppingBag className="w-3.5 h-3.5" />,
-  "Training": <GraduationCap className="w-3.5 h-3.5" />, "Office": <Building2 className="w-3.5 h-3.5" />,
-  "Plumbing": <Wrench className="w-3.5 h-3.5" />, "Heating": <Flame className="w-3.5 h-3.5" />,
-  "Gas Work": <Fuel className="w-3.5 h-3.5" />, "Electrical": <Zap className="w-3.5 h-3.5" />,
-  "Commissioning": <Settings className="w-3.5 h-3.5" />, "Break": <Coffee className="w-3.5 h-3.5" />,
+  "Free Survey / Meeting": <ClipboardCheck className="w-3.5 h-3.5" />,
+  "Installation": <HardHat className="w-3.5 h-3.5" />,
+  "Repair / Maintenance": <Wrench className="w-3.5 h-3.5" />,
+  "Service": <Settings className="w-3.5 h-3.5" />,
+  "Call Out": <Phone className="w-3.5 h-3.5" />,
+  "Out of Hours Call Out": <PhoneOff className="w-3.5 h-3.5" />,
+  "Travel Time": <Truck className="w-3.5 h-3.5" />,
+  "At the Merchants": <ShoppingBag className="w-3.5 h-3.5" />,
 };
 
 const categoryColors: Record<string, string> = {
-  "Travel": "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300",
-  "Merchant Trip": "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300",
-  "Training": "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300",
-  "Office": "bg-slate-100 text-slate-800 dark:bg-slate-900/30 dark:text-slate-300",
-  "Plumbing": "bg-cyan-100 text-cyan-800 dark:bg-cyan-900/30 dark:text-cyan-300",
-  "Heating": "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300",
-  "Gas Work": "bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300",
-  "Electrical": "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300",
-  "Commissioning": "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
-  "Break": "bg-stone-100 text-stone-700 dark:bg-stone-900/30 dark:text-stone-300",
+  "Free Survey / Meeting": "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300",
+  "Installation": "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
+  "Repair / Maintenance": "bg-cyan-100 text-cyan-800 dark:bg-cyan-900/30 dark:text-cyan-300",
+  "Service": "bg-slate-100 text-slate-800 dark:bg-slate-900/30 dark:text-slate-300",
+  "Call Out": "bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300",
+  "Out of Hours Call Out": "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300",
+  "Travel Time": "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300",
+  "At the Merchants": "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300",
 };
 
 const statusStyles: Record<string, string> = {

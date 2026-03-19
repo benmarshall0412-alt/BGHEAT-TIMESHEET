@@ -3,16 +3,14 @@ import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
 export const activityCategories = [
-  "Travel",
-  "Merchant Trip",
-  "Training",
-  "Office",
-  "Plumbing",
-  "Heating",
-  "Gas Work",
-  "Electrical",
-  "Commissioning",
-  "Break",
+  "Free Survey / Meeting",
+  "Installation",
+  "Repair / Maintenance",
+  "Service",
+  "Call Out",
+  "Out of Hours Call Out",
+  "Travel Time",
+  "At the Merchants",
 ] as const;
 
 export type ActivityCategory = (typeof activityCategories)[number];

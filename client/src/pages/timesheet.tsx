@@ -9,8 +9,8 @@ import { useToast } from "@/hooks/use-toast";
 import { PerplexityAttribution } from "@/components/PerplexityAttribution";
 import {
   Play, Square, MapPin, Clock, ChevronLeft, ChevronRight,
-  Truck, ShoppingBag, GraduationCap, Building2, Wrench, Flame,
-  Fuel, Zap, Settings, Coffee, Trash2, Navigation, LogOut, Shield,
+  ClipboardCheck, HardHat, Wrench, Settings, Phone, PhoneOff,
+  Truck, ShoppingBag, Trash2, Navigation, LogOut, Shield, Flame,
   Plus, BookMarked, X, Check, TreePalm, User, Search,
   Sun, Moon, Map as MapIcon
 } from "lucide-react";
@@ -21,24 +21,25 @@ import { activityCategories } from "@shared/schema";
 import type { AuthUser } from "@/App";
 
 const categoryIcons: Record<string, React.ReactNode> = {
-  "Travel": <Truck className="w-4 h-4" />, "Merchant Trip": <ShoppingBag className="w-4 h-4" />,
-  "Training": <GraduationCap className="w-4 h-4" />, "Office": <Building2 className="w-4 h-4" />,
-  "Plumbing": <Wrench className="w-4 h-4" />, "Heating": <Flame className="w-4 h-4" />,
-  "Gas Work": <Fuel className="w-4 h-4" />, "Electrical": <Zap className="w-4 h-4" />,
-  "Commissioning": <Settings className="w-4 h-4" />, "Break": <Coffee className="w-4 h-4" />,
+  "Free Survey / Meeting": <ClipboardCheck className="w-4 h-4" />,
+  "Installation": <HardHat className="w-4 h-4" />,
+  "Repair / Maintenance": <Wrench className="w-4 h-4" />,
+  "Service": <Settings className="w-4 h-4" />,
+  "Call Out": <Phone className="w-4 h-4" />,
+  "Out of Hours Call Out": <PhoneOff className="w-4 h-4" />,
+  "Travel Time": <Truck className="w-4 h-4" />,
+  "At the Merchants": <ShoppingBag className="w-4 h-4" />,
 };
 
 const categoryColors: Record<string, string> = {
-  "Travel": "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300",
-  "Merchant Trip": "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300",
-  "Training": "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300",
-  "Office": "bg-slate-100 text-slate-800 dark:bg-slate-900/30 dark:text-slate-300",
-  "Plumbing": "bg-cyan-100 text-cyan-800 dark:bg-cyan-900/30 dark:text-cyan-300",
-  "Heating": "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300",
-  "Gas Work": "bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300",
-  "Electrical": "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/30 dark:text-yellow-300",
-  "Commissioning": "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
-  "Break": "bg-stone-100 text-stone-700 dark:bg-stone-900/30 dark:text-stone-300",
+  "Free Survey / Meeting": "bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-300",
+  "Installation": "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300",
+  "Repair / Maintenance": "bg-cyan-100 text-cyan-800 dark:bg-cyan-900/30 dark:text-cyan-300",
+  "Service": "bg-slate-100 text-slate-800 dark:bg-slate-900/30 dark:text-slate-300",
+  "Call Out": "bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300",
+  "Out of Hours Call Out": "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300",
+  "Travel Time": "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300",
+  "At the Merchants": "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300",
 };
 
 function formatDuration(minutes: number | null): string {
@@ -61,7 +62,7 @@ function getGPS(): Promise<{ lat: string; lng: string } | null> {
 export default function TimesheetPage({ user, onLogout }: { user: AuthUser; onLogout: () => void }) {
   const { toast } = useToast();
   const [selectedDate, setSelectedDate] = useState(new Date());
-  const [selectedCategory, setSelectedCategory] = useState<ActivityCategory>("Plumbing");
+  const [selectedCategory, setSelectedCategory] = useState<ActivityCategory>("Installation");
   const [siteName, setSiteName] = useState("");
   const [notes, setNotes] = useState("");
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
