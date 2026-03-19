@@ -389,19 +389,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(ended);
   });
 
+  // Get day sessions for all users on a date (admin view) — must come before /api/day-sessions
+  app.get("/api/day-sessions/all", async (req, res) => {
+    const { date } = req.query;
+    if (!date) return res.status(400).json({ error: "date required" });
+    const sessions = await storage.getAllDaySessionsForDate(date as string);
+    res.json(sessions);
+  });
+
   // Get day sessions by date for user
   app.get("/api/day-sessions", async (req, res) => {
     const { userId, date } = req.query;
     if (!userId || !date) return res.status(400).json({ error: "userId and date required" });
     const sessions = await storage.getDaySessionsByDate(Number(userId), date as string);
-    res.json(sessions);
-  });
-
-  // Get day sessions for all users on a date (admin view)
-  app.get("/api/day-sessions/all", async (req, res) => {
-    const { date } = req.query;
-    if (!date) return res.status(400).json({ error: "date required" });
-    const sessions = await storage.getAllDaySessionsForDate(date as string);
     res.json(sessions);
   });
 
@@ -427,6 +427,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const { daySessionId } = req.query;
     if (!daySessionId) return res.status(400).json({ error: "daySessionId required" });
     const waypoints = await storage.getWaypointsBySession(Number(daySessionId));
+    res.json(waypoints);
+  });
+
+  // Latest GPS position per user for a given date
+  app.get("/api/gps-waypoints/latest", async (req, res) => {
+    const { date } = req.query;
+    if (!date) return res.status(400).json({ error: "date required" });
+    const waypoints = await storage.getLatestWaypointsForDate(date as string);
     res.json(waypoints);
   });
 }

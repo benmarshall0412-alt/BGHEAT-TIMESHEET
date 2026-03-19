@@ -48,6 +48,7 @@ export interface IStorage {
   // GPS waypoints
   createGpsWaypoint(wp: InsertGpsWaypoint): Promise<GpsWaypoint>;
   getWaypointsBySession(daySessionId: number): Promise<GpsWaypoint[]>;
+  getLatestWaypointsForDate(date: string): Promise<GpsWaypoint[]>;
 }
 
 /** Map a raw SQLite row (snake_case, integer booleans) to a TimeEntry */
@@ -491,6 +492,23 @@ export class SqliteStorage implements IStorage {
 
   async getWaypointsBySession(daySessionId: number): Promise<GpsWaypoint[]> {
     return (this.db.prepare("SELECT * FROM gps_waypoints WHERE day_session_id = ? ORDER BY timestamp").all(daySessionId) as any[]).map(rowToGpsWaypoint);
+  }
+
+  async getLatestWaypointsForDate(date: string): Promise<GpsWaypoint[]> {
+    // Get the latest waypoint per user for all day sessions on a given date
+    const rows = this.db.prepare(`
+      SELECT gw.* FROM gps_waypoints gw
+      INNER JOIN day_sessions ds ON gw.day_session_id = ds.id
+      WHERE ds.date = ?
+      AND gw.id IN (
+        SELECT MAX(gw2.id) FROM gps_waypoints gw2
+        INNER JOIN day_sessions ds2 ON gw2.day_session_id = ds2.id
+        WHERE ds2.date = ?
+        GROUP BY gw2.user_id
+      )
+      ORDER BY gw.timestamp DESC
+    `).all(date, date) as any[];
+    return rows.map(rowToGpsWaypoint);
   }
 }
 

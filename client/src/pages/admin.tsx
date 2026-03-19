@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
@@ -105,11 +105,153 @@ export default function AdminPage({ user, onLogout }: { user: AuthUser; onLogout
   );
 }
 
+// ===== TEAM MAP COMPONENT =====
+const LEAFLET_CSS = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
+const LEAFLET_JS = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js";
+
+function TeamMap({ users, latestWaypoints, todaySessions, filterUserId, onSelectUser }: {
+  users: UserInfo[];
+  latestWaypoints: GpsWaypoint[];
+  todaySessions: DaySession[];
+  filterUserId: string;
+  onSelectUser: (id: string) => void;
+}) {
+  const mapRef = useRef<HTMLDivElement>(null);
+  const mapInstance = useRef<any>(null);
+  const markersRef = useRef<any[]>([]);
+  const [mapReady, setMapReady] = useState(false);
+
+  // Load Leaflet
+  useEffect(() => {
+    if (document.querySelector('link[href*="leaflet"]')) return;
+    const link = document.createElement("link");
+    link.rel = "stylesheet"; link.href = LEAFLET_CSS;
+    document.head.appendChild(link);
+    const script = document.createElement("script");
+    script.src = LEAFLET_JS;
+    document.head.appendChild(script);
+  }, []);
+
+  // Initialize map
+  useEffect(() => {
+    if (!mapRef.current) return;
+    const initMap = () => {
+      const L = (window as any).L;
+      if (!L || mapInstance.current) return;
+      mapInstance.current = L.map(mapRef.current, {
+        center: [51.48, -3.18], // Cardiff default
+        zoom: 12,
+        zoomControl: true,
+      });
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>',
+        maxZoom: 19,
+      }).addTo(mapInstance.current);
+      setMapReady(true);
+    };
+    if ((window as any).L) { initMap(); }
+    else {
+      const check = setInterval(() => { if ((window as any).L) { clearInterval(check); initMap(); } }, 200);
+      return () => clearInterval(check);
+    }
+    return () => {
+      if (mapInstance.current) { mapInstance.current.remove(); mapInstance.current = null; }
+    };
+  }, []);
+
+  // Update markers
+  useEffect(() => {
+    const L = (window as any).L;
+    if (!L || !mapInstance.current) return;
+
+    // Clear existing markers
+    markersRef.current.forEach(m => m.remove());
+    markersRef.current = [];
+
+    const filtered = filterUserId === "all"
+      ? latestWaypoints
+      : latestWaypoints.filter(wp => wp.userId === Number(filterUserId));
+
+    if (filtered.length === 0) return;
+
+    const bounds: [number, number][] = [];
+
+    filtered.forEach(wp => {
+      const lat = parseFloat(wp.lat);
+      const lng = parseFloat(wp.lng);
+      if (isNaN(lat) || isNaN(lng)) return;
+
+      const empUser = users.find(u => u.id === wp.userId);
+      const empSession = todaySessions.find(s => s.userId === wp.userId);
+      const name = empUser?.name || "Unknown";
+      const initials = name.charAt(0).toUpperCase();
+      const isActive = empSession?.isActive;
+
+      const icon = L.divIcon({
+        className: "custom-marker",
+        html: `<div style="width:36px;height:36px;border-radius:50%;background:${isActive ? "#16a34a" : "#64748b"};color:white;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;border:3px solid white;box-shadow:0 2px 8px rgba(0,0,0,0.3);">${initials}</div>`,
+        iconSize: [36, 36],
+        iconAnchor: [18, 18],
+      });
+
+      const time = wp.timestamp ? new Date(wp.timestamp).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) : "";
+      const marker = L.marker([lat, lng], { icon }).addTo(mapInstance.current)
+        .bindPopup(`<div style="font-family:sans-serif;"><strong>${name}</strong><br/><span style="color:#666;font-size:12px;">${wp.label || wp.eventType.replace(/_/g, " ")}</span><br/><span style="color:#999;font-size:11px;">${time}</span></div>`);
+
+      markersRef.current.push(marker);
+      bounds.push([lat, lng]);
+    });
+
+    if (bounds.length > 0) {
+      if (bounds.length === 1) {
+        mapInstance.current.setView(bounds[0], 14);
+      } else {
+        mapInstance.current.fitBounds(bounds, { padding: [40, 40] });
+      }
+    }
+  }, [latestWaypoints, filterUserId, users, todaySessions, mapReady]);
+
+  const wpCount = filterUserId === "all" ? latestWaypoints.length : latestWaypoints.filter(wp => wp.userId === Number(filterUserId)).length;
+
+  return (
+    <Card className="overflow-hidden relative" data-testid="card-team-map">
+      <div className="p-4 border-b flex items-center justify-between flex-wrap gap-3">
+        <div className="flex items-center gap-2">
+          <MapIcon className="w-4 h-4 text-primary" />
+          <h3 className="text-sm font-semibold">Team Map</h3>
+          <Badge variant="secondary" className="text-xs">{wpCount} location{wpCount !== 1 ? "s" : ""}</Badge>
+        </div>
+        <Select value={filterUserId} onValueChange={onSelectUser}>
+          <SelectTrigger className="w-[180px] h-8 text-sm" data-testid="select-map-user">
+            <SelectValue placeholder="Filter user" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Users</SelectItem>
+            {users.filter(u => u.role !== "admin").map(u => (
+              <SelectItem key={u.id} value={String(u.id)}>{u.name}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <div ref={mapRef} style={{ height: 350, width: "100%" }} data-testid="map-container" />
+      {wpCount === 0 && (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none" style={{ top: 60 }}>
+          <div className="bg-background/80 backdrop-blur rounded-lg px-4 py-3 text-center">
+            <Navigation className="w-6 h-6 text-muted-foreground mx-auto mb-1" />
+            <p className="text-sm text-muted-foreground">No GPS data yet today</p>
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 // ===== LIVE TAB — See all employees' current status =====
 function LiveTab({ user }: { user: AuthUser }) {
   const today = format(new Date(), "yyyy-MM-dd");
   const [expandedUser, setExpandedUser] = useState<number | null>(null);
   const [mapSession, setMapSession] = useState<number | null>(null);
+  const [mapFilterUser, setMapFilterUser] = useState("all");
 
   const { data: users = [] } = useQuery<UserInfo[]>({
     queryKey: ["/api/users"],
@@ -126,6 +268,12 @@ function LiveTab({ user }: { user: AuthUser }) {
     queryKey: ["/api/day-sessions/all", today],
     queryFn: async () => { const r = await apiRequest("GET", `/api/day-sessions/all?date=${today}`); return r.json(); },
     refetchInterval: 15000,
+  });
+
+  const { data: latestWaypoints = [] } = useQuery<GpsWaypoint[]>({
+    queryKey: ["/api/gps-waypoints/latest", today],
+    queryFn: async () => { const r = await apiRequest("GET", `/api/gps-waypoints/latest?date=${today}`); return r.json(); },
+    refetchInterval: 30000,
   });
 
   const { data: waypoints = [] } = useQuery<GpsWaypoint[]>({
@@ -145,6 +293,15 @@ function LiveTab({ user }: { user: AuthUser }) {
 
   return (
     <div className="space-y-6">
+      {/* Team Map */}
+      <TeamMap
+        users={users}
+        latestWaypoints={latestWaypoints}
+        todaySessions={todaySessions}
+        filterUserId={mapFilterUser}
+        onSelectUser={setMapFilterUser}
+      />
+
       {/* Summary cards */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <Card className="p-4">
