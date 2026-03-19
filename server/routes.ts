@@ -389,6 +389,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(ended);
   });
 
+  // Get day sessions for a user in a date range (monthly timesheet)
+  app.get("/api/day-sessions/range", async (req, res) => {
+    const { userId, startDate, endDate } = req.query;
+    if (!userId || !startDate || !endDate) return res.status(400).json({ error: "userId, startDate, endDate required" });
+    const sessions = await storage.getDaySessionsByDateRange(Number(userId), startDate as string, endDate as string);
+    res.json(sessions);
+  });
+
   // Get day sessions for all users on a date (admin view) — must come before /api/day-sessions
   app.get("/api/day-sessions/all", async (req, res) => {
     const { date } = req.query;
@@ -427,6 +435,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const { daySessionId } = req.query;
     if (!daySessionId) return res.status(400).json({ error: "daySessionId required" });
     const waypoints = await storage.getWaypointsBySession(Number(daySessionId));
+    res.json(waypoints);
+  });
+
+  // All GPS waypoints for a specific user on a date (for journey line)
+  app.get("/api/gps-waypoints/user", async (req, res) => {
+    const { userId, date } = req.query;
+    if (!userId || !date) return res.status(400).json({ error: "userId and date required" });
+    const waypoints = await storage.getAllWaypointsForUserOnDate(Number(userId), date as string);
     res.json(waypoints);
   });
 

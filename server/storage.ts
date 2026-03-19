@@ -49,6 +49,8 @@ export interface IStorage {
   createGpsWaypoint(wp: InsertGpsWaypoint): Promise<GpsWaypoint>;
   getWaypointsBySession(daySessionId: number): Promise<GpsWaypoint[]>;
   getLatestWaypointsForDate(date: string): Promise<GpsWaypoint[]>;
+  getAllWaypointsForUserOnDate(userId: number, date: string): Promise<GpsWaypoint[]>;
+  getDaySessionsByDateRange(userId: number, startDate: string, endDate: string): Promise<DaySession[]>;
 }
 
 /** Map a raw SQLite row (snake_case, integer booleans) to a TimeEntry */
@@ -509,6 +511,22 @@ export class SqliteStorage implements IStorage {
       ORDER BY gw.timestamp DESC
     `).all(date, date) as any[];
     return rows.map(rowToGpsWaypoint);
+  }
+
+  async getAllWaypointsForUserOnDate(userId: number, date: string): Promise<GpsWaypoint[]> {
+    const rows = this.db.prepare(`
+      SELECT gw.* FROM gps_waypoints gw
+      INNER JOIN day_sessions ds ON gw.day_session_id = ds.id
+      WHERE gw.user_id = ? AND ds.date = ?
+      ORDER BY gw.timestamp ASC
+    `).all(userId, date) as any[];
+    return rows.map(rowToGpsWaypoint);
+  }
+
+  async getDaySessionsByDateRange(userId: number, startDate: string, endDate: string): Promise<DaySession[]> {
+    return (this.db.prepare(
+      "SELECT * FROM day_sessions WHERE user_id = ? AND date >= ? AND date <= ? ORDER BY date, start_time"
+    ).all(userId, startDate, endDate) as any[]).map(rowToDaySession);
   }
 }
 

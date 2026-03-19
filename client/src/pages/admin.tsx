@@ -15,9 +15,9 @@ import {
   ClipboardCheck, HardHat, Wrench, Settings, Phone, PhoneOff,
   Truck, ShoppingBag, MapPin, ArrowLeft, Users, FileSpreadsheet,
   UserPlus, Trash2, KeyRound, CheckCircle2, XCircle, TreePalm, Edit, Save, X,
-  Activity, Eye, PlayCircle, StopCircle, Navigation, Map as MapIcon
+  Activity, Eye, PlayCircle, StopCircle, Navigation, Map as MapIcon, FileText, CalendarDays, Printer
 } from "lucide-react";
-import { format, addDays, subDays, startOfWeek, endOfWeek, subWeeks, addWeeks } from "date-fns";
+import { format, addDays, subDays, startOfWeek, endOfWeek, subWeeks, addWeeks, startOfMonth, endOfMonth, addMonths, subMonths, eachDayOfInterval, isWeekend, parseISO } from "date-fns";
 import { Link } from "wouter";
 import type { TimeEntry, LeaveRequest, DaySession, GpsWaypoint } from "@shared/schema";
 import type { AuthUser } from "@/App";
@@ -116,10 +116,24 @@ function TeamMap({ users, latestWaypoints, todaySessions, filterUserId, onSelect
   filterUserId: string;
   onSelectUser: (id: string) => void;
 }) {
+  const today = format(new Date(), "yyyy-MM-dd");
   const mapRef = useRef<HTMLDivElement>(null);
   const mapInstance = useRef<any>(null);
   const markersRef = useRef<any[]>([]);
+  const polylineRef = useRef<any>(null);
   const [mapReady, setMapReady] = useState(false);
+
+  // Fetch all waypoints for a single user (journey line mode)
+  const { data: userJourneyWaypoints = [] } = useQuery<GpsWaypoint[]>({
+    queryKey: ["/api/gps-waypoints/user", filterUserId, today],
+    queryFn: async () => {
+      if (filterUserId === "all") return [];
+      const r = await apiRequest("GET", `/api/gps-waypoints/user?userId=${filterUserId}&date=${today}`);
+      return r.json();
+    },
+    enabled: filterUserId !== "all",
+    refetchInterval: 30000,
+  });
 
   // Load Leaflet
   useEffect(() => {
@@ -159,24 +173,29 @@ function TeamMap({ users, latestWaypoints, todaySessions, filterUserId, onSelect
     };
   }, []);
 
-  // Update markers
-  useEffect(() => {
-    const L = (window as any).L;
-    if (!L || !mapInstance.current) return;
-
-    // Clear existing markers
+  // Clear map layers helper
+  const clearMap = () => {
     markersRef.current.forEach(m => m.remove());
     markersRef.current = [];
+    if (polylineRef.current) {
+      polylineRef.current.remove();
+      polylineRef.current = null;
+    }
+  };
 
-    const filtered = filterUserId === "all"
-      ? latestWaypoints
-      : latestWaypoints.filter(wp => wp.userId === Number(filterUserId));
+  // Update markers — ALL USERS mode (pins only)
+  useEffect(() => {
+    const L = (window as any).L;
+    if (!L || !mapInstance.current || !mapReady) return;
+    if (filterUserId !== "all") return; // handled by journey effect
 
-    if (filtered.length === 0) return;
+    clearMap();
+
+    if (latestWaypoints.length === 0) return;
 
     const bounds: [number, number][] = [];
 
-    filtered.forEach(wp => {
+    latestWaypoints.forEach(wp => {
       const lat = parseFloat(wp.lat);
       const lng = parseFloat(wp.lng);
       if (isNaN(lat) || isNaN(lng)) return;
@@ -202,24 +221,88 @@ function TeamMap({ users, latestWaypoints, todaySessions, filterUserId, onSelect
       bounds.push([lat, lng]);
     });
 
-    if (bounds.length > 0) {
-      if (bounds.length === 1) {
-        mapInstance.current.setView(bounds[0], 14);
-      } else {
-        mapInstance.current.fitBounds(bounds, { padding: [40, 40] });
-      }
+    if (bounds.length === 1) {
+      mapInstance.current.setView(bounds[0], 14);
+    } else if (bounds.length > 1) {
+      mapInstance.current.fitBounds(bounds, { padding: [40, 40] });
     }
   }, [latestWaypoints, filterUserId, users, todaySessions, mapReady]);
 
-  const wpCount = filterUserId === "all" ? latestWaypoints.length : latestWaypoints.filter(wp => wp.userId === Number(filterUserId)).length;
+  // Update markers — SINGLE USER mode (journey line + numbered pins)
+  useEffect(() => {
+    const L = (window as any).L;
+    if (!L || !mapInstance.current || !mapReady) return;
+    if (filterUserId === "all") return; // handled by all-users effect
+
+    clearMap();
+
+    if (userJourneyWaypoints.length === 0) return;
+
+    const empUser = users.find(u => u.id === Number(filterUserId));
+    const name = empUser?.name || "Unknown";
+    const bounds: [number, number][] = [];
+    const lineCoords: [number, number][] = [];
+
+    userJourneyWaypoints.forEach((wp, idx) => {
+      const lat = parseFloat(wp.lat);
+      const lng = parseFloat(wp.lng);
+      if (isNaN(lat) || isNaN(lng)) return;
+
+      lineCoords.push([lat, lng]);
+      bounds.push([lat, lng]);
+
+      const isFirst = idx === 0;
+      const isLast = idx === userJourneyWaypoints.length - 1;
+      const stepNum = idx + 1;
+
+      // Green for first (start), red for last if day ended, blue for stops in between
+      const bgColor = isFirst ? "#16a34a" : isLast && wp.eventType === "day_end" ? "#dc2626" : "#2563eb";
+      const size = (isFirst || isLast) ? 34 : 28;
+      const fontSize = (isFirst || isLast) ? 13 : 11;
+
+      const icon = L.divIcon({
+        className: "custom-marker",
+        html: `<div style="width:${size}px;height:${size}px;border-radius:50%;background:${bgColor};color:white;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:${fontSize}px;border:2px solid white;box-shadow:0 2px 6px rgba(0,0,0,0.3);">${stepNum}</div>`,
+        iconSize: [size, size],
+        iconAnchor: [size / 2, size / 2],
+      });
+
+      const time = wp.timestamp ? new Date(wp.timestamp).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) : "";
+      const eventLabel = wp.label || wp.eventType.replace(/_/g, " ");
+      const marker = L.marker([lat, lng], { icon }).addTo(mapInstance.current)
+        .bindPopup(`<div style="font-family:sans-serif;"><strong>${name}</strong><br/><span style="font-size:12px;font-weight:600;color:${bgColor};">#${stepNum}</span> <span style="color:#666;font-size:12px;">${eventLabel}</span><br/><span style="color:#999;font-size:11px;">${time}</span></div>`);
+
+      markersRef.current.push(marker);
+    });
+
+    // Draw journey polyline
+    if (lineCoords.length >= 2) {
+      polylineRef.current = L.polyline(lineCoords, {
+        color: "#2563eb",
+        weight: 3,
+        opacity: 0.7,
+        dashArray: "8, 6",
+      }).addTo(mapInstance.current);
+    }
+
+    if (bounds.length === 1) {
+      mapInstance.current.setView(bounds[0], 15);
+    } else if (bounds.length > 1) {
+      mapInstance.current.fitBounds(bounds, { padding: [40, 40] });
+    }
+  }, [userJourneyWaypoints, filterUserId, users, mapReady]);
+
+  const wpCount = filterUserId === "all"
+    ? latestWaypoints.length
+    : userJourneyWaypoints.length;
 
   return (
     <Card className="overflow-hidden relative" data-testid="card-team-map">
       <div className="p-4 border-b flex items-center justify-between flex-wrap gap-3">
         <div className="flex items-center gap-2">
           <MapIcon className="w-4 h-4 text-primary" />
-          <h3 className="text-sm font-semibold">Team Map</h3>
-          <Badge variant="secondary" className="text-xs">{wpCount} location{wpCount !== 1 ? "s" : ""}</Badge>
+          <h3 className="text-sm font-semibold">{filterUserId === "all" ? "Team Map" : `${users.find(u => u.id === Number(filterUserId))?.name || "User"}'s Journey`}</h3>
+          <Badge variant="secondary" className="text-xs">{wpCount} {filterUserId === "all" ? "location" : "stop"}{wpCount !== 1 ? "s" : ""}</Badge>
         </div>
         <Select value={filterUserId} onValueChange={onSelectUser}>
           <SelectTrigger className="w-[180px] h-8 text-sm" data-testid="select-map-user">
@@ -475,30 +558,138 @@ function LiveTab({ user }: { user: AuthUser }) {
 }
 
 // ===== TIMESHEETS TAB =====
+// PDF generation for monthly timesheet
+function generateMonthlyPDF(employeeName: string, monthLabel: string, entries: TimeEntry[], daySessions: DaySession[]) {
+  const days = entries.reduce<Record<string, TimeEntry[]>>((acc, e) => {
+    acc[e.date] = acc[e.date] || [];
+    acc[e.date].push(e);
+    return acc;
+  }, {});
+
+  const sortedDates = Object.keys(days).sort();
+  const grandTotal = entries.reduce((s, e) => s + (e.durationMinutes || 0), 0);
+
+  let html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Timesheet - ${employeeName} - ${monthLabel}</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 11px; color: #1a1a2e; padding: 24px; }
+    .header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; padding-bottom: 12px; border-bottom: 2px solid #1e5a8a; }
+    .header h1 { font-size: 18px; color: #1e5a8a; font-weight: 700; }
+    .header p { font-size: 11px; color: #666; margin-top: 2px; }
+    .summary { display: flex; gap: 24px; margin-bottom: 16px; padding: 10px 14px; background: #f0f6ff; border-radius: 6px; }
+    .summary div { text-align: center; }
+    .summary .label { font-size: 9px; text-transform: uppercase; color: #666; letter-spacing: 0.5px; }
+    .summary .value { font-size: 16px; font-weight: 700; color: #1e5a8a; }
+    .day-section { margin-bottom: 12px; page-break-inside: avoid; }
+    .day-header { background: #1e5a8a; color: white; padding: 6px 10px; font-weight: 600; font-size: 11px; border-radius: 4px 4px 0 0; display: flex; justify-content: space-between; }
+    .day-header.weekend { background: #94a3b8; }
+    table { width: 100%; border-collapse: collapse; }
+    th { background: #e8f0fe; padding: 5px 8px; text-align: left; font-size: 9px; text-transform: uppercase; color: #555; font-weight: 600; letter-spacing: 0.3px; }
+    td { padding: 5px 8px; border-bottom: 1px solid #eee; font-size: 10px; }
+    tr:last-child td { border-bottom: none; }
+    .cat-badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 9px; font-weight: 600; background: #e0edff; color: #1e5a8a; }
+    .running { color: #16a34a; font-weight: 600; }
+    .day-total { text-align: right; font-weight: 700; color: #1e5a8a; }
+    .grand-total { margin-top: 16px; padding: 12px 14px; background: #1e5a8a; color: white; border-radius: 6px; display: flex; justify-content: space-between; font-weight: 700; font-size: 14px; }
+    .no-entries { padding: 6px 10px; color: #999; font-style: italic; font-size: 10px; border: 1px solid #eee; border-top: none; border-radius: 0 0 4px 4px; }
+    .footer { margin-top: 24px; text-align: center; font-size: 9px; color: #999; }
+    @media print { body { padding: 12px; } .day-section { page-break-inside: avoid; } }
+  </style></head><body>`;
+
+  html += `<div class="header"><div><h1>BG Heat Limited</h1><p>Monthly Timesheet</p></div><div style="text-align:right;"><p style="font-size:14px;font-weight:700;">${employeeName}</p><p>${monthLabel}</p></div></div>`;
+
+  const workingDays = sortedDates.length;
+  const totalEntries = entries.length;
+  const hrs = Math.floor(grandTotal / 60);
+  const mins = grandTotal % 60;
+  html += `<div class="summary"><div><div class="label">Working Days</div><div class="value">${workingDays}</div></div><div><div class="label">Total Entries</div><div class="value">${totalEntries}</div></div><div><div class="label">Total Hours</div><div class="value">${hrs}h ${mins}m</div></div></div>`;
+
+  sortedDates.forEach(date => {
+    const dayEntries = days[date].sort((a, b) => a.startTime.localeCompare(b.startTime));
+    const dayTotal = dayEntries.reduce((s, e) => s + (e.durationMinutes || 0), 0);
+    const dateObj = parseISO(date);
+    const dayLabel = format(dateObj, "EEEE, d MMMM yyyy");
+    const weekend = isWeekend(dateObj);
+    const daySession = daySessions.find(s => s.date === date);
+
+    html += `<div class="day-section">`;
+    html += `<div class="day-header${weekend ? " weekend" : ""}">`;
+    html += `<span>${dayLabel}${daySession ? " — Day: " + daySession.startTime + (daySession.endTime ? " to " + daySession.endTime : " (ongoing)") : ""}</span>`;
+    html += `<span>${Math.floor(dayTotal / 60)}h ${dayTotal % 60}m</span></div>`;
+    html += `<table><thead><tr><th>Time</th><th>Duration</th><th>Activity</th><th>Site / Location</th><th>Notes</th></tr></thead><tbody>`;
+
+    dayEntries.forEach(e => {
+      const dur = e.durationMinutes != null ? `${Math.floor(e.durationMinutes / 60)}h ${e.durationMinutes % 60}m` : '<span class="running">Running</span>';
+      html += `<tr><td>${e.startTime}${e.endTime ? " - " + e.endTime : ""}</td><td>${dur}</td><td><span class="cat-badge">${e.category}</span></td><td>${e.siteName || "—"}</td><td>${e.notes || "—"}</td></tr>`;
+    });
+
+    html += `</tbody></table></div>`;
+  });
+
+  html += `<div class="grand-total"><span>Month Total</span><span>${hrs}h ${mins}m</span></div>`;
+  html += `<div class="footer">Generated ${format(new Date(), "d MMM yyyy, HH:mm")} — BG Heat Limited</div>`;
+  html += `</body></html>`;
+
+  const blob = new Blob([html], { type: "text/html" });
+  const win = window.open("", "_blank");
+  if (win) {
+    win.document.write(html);
+    win.document.close();
+    setTimeout(() => win.print(), 500);
+  }
+}
+
 function TimesheetsTab({ user }: { user: AuthUser }) {
-  const [viewMode, setViewMode] = useState<"day" | "week">("day");
+  const [viewMode, setViewMode] = useState<"day" | "week" | "month">("day");
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [filterEmployee, setFilterEmployee] = useState("all");
   const [filterCategory, setFilterCategory] = useState("all");
+  const [monthEmployee, setMonthEmployee] = useState<string>("");
 
   const dateStr = format(selectedDate, "yyyy-MM-dd");
   const weekStartDate = startOfWeek(selectedDate, { weekStartsOn: 1 });
   const weekEndDate = endOfWeek(selectedDate, { weekStartsOn: 1 });
-  const startDate = viewMode === "day" ? dateStr : format(weekStartDate, "yyyy-MM-dd");
-  const endDate = viewMode === "day" ? dateStr : format(weekEndDate, "yyyy-MM-dd");
+  const monthStartDate = startOfMonth(selectedDate);
+  const monthEndDate = endOfMonth(selectedDate);
+  const startDate = viewMode === "day" ? dateStr : viewMode === "week" ? format(weekStartDate, "yyyy-MM-dd") : format(monthStartDate, "yyyy-MM-dd");
+  const endDate = viewMode === "day" ? dateStr : viewMode === "week" ? format(weekEndDate, "yyyy-MM-dd") : format(monthEndDate, "yyyy-MM-dd");
 
   const { data: users = [] } = useQuery<UserInfo[]>({
     queryKey: ["/api/users"],
     queryFn: async () => { const r = await apiRequest("GET", "/api/users"); return r.json(); },
   });
 
+  // Auto-select first non-admin user for month view
+  useEffect(() => {
+    if (viewMode === "month" && !monthEmployee && users.length > 0) {
+      const nonAdmin = users.find(u => u.role !== "admin");
+      setMonthEmployee(nonAdmin ? String(nonAdmin.id) : String(users[0].id));
+    }
+  }, [viewMode, users, monthEmployee]);
+
   const { data: entries = [], isLoading } = useQuery<TimeEntry[]>({
-    queryKey: ["/api/entries/range", startDate, endDate],
-    queryFn: async () => { const r = await apiRequest("GET", `/api/entries/range?startDate=${startDate}&endDate=${endDate}`); return r.json(); },
+    queryKey: ["/api/entries/range", startDate, endDate, viewMode === "month" ? monthEmployee : undefined],
+    queryFn: async () => {
+      const params = new URLSearchParams({ startDate, endDate });
+      if (viewMode === "month" && monthEmployee) params.set("userId", monthEmployee);
+      const r = await apiRequest("GET", `/api/entries/range?${params.toString()}`);
+      return r.json();
+    },
+  });
+
+  // Day sessions for month view (for PDF and on-screen day session info)
+  const { data: monthDaySessions = [] } = useQuery<DaySession[]>({
+    queryKey: ["/api/day-sessions/range", monthEmployee, startDate, endDate],
+    queryFn: async () => {
+      if (!monthEmployee) return [];
+      const r = await apiRequest("GET", `/api/day-sessions/range?userId=${monthEmployee}&startDate=${startDate}&endDate=${endDate}`);
+      return r.json();
+    },
+    enabled: viewMode === "month" && !!monthEmployee,
   });
 
   const filtered = entries.filter(e => {
-    if (filterEmployee !== "all" && e.userId !== Number(filterEmployee)) return false;
+    if (viewMode !== "month" && filterEmployee !== "all" && e.userId !== Number(filterEmployee)) return false;
     if (filterCategory !== "all" && e.category !== filterCategory) return false;
     return true;
   });
@@ -527,56 +718,94 @@ function TimesheetsTab({ user }: { user: AuthUser }) {
     });
   };
 
+  const handleDownloadPDF = () => {
+    const emp = users.find(u => String(u.id) === monthEmployee);
+    if (!emp) return;
+    const monthLabel = format(monthStartDate, "MMMM yyyy");
+    generateMonthlyPDF(emp.name, monthLabel, filtered, monthDaySessions);
+  };
+
   const displayTitle = viewMode === "day"
     ? format(selectedDate, "EEEE, d MMMM yyyy")
-    : `${format(weekStartDate, "d MMM")} - ${format(weekEndDate, "d MMM yyyy")}`;
+    : viewMode === "week"
+    ? `${format(weekStartDate, "d MMM")} - ${format(weekEndDate, "d MMM yyyy")}`
+    : format(monthStartDate, "MMMM yyyy");
 
-  const navigateBack = () => setSelectedDate(d => viewMode === "day" ? subDays(d, 1) : subWeeks(d, 1));
-  const navigateForward = () => setSelectedDate(d => viewMode === "day" ? addDays(d, 1) : addWeeks(d, 1));
+  const navigateBack = () => setSelectedDate(d => viewMode === "day" ? subDays(d, 1) : viewMode === "week" ? subWeeks(d, 1) : subMonths(d, 1));
+  const navigateForward = () => setSelectedDate(d => viewMode === "day" ? addDays(d, 1) : viewMode === "week" ? addWeeks(d, 1) : addMonths(d, 1));
   const categories = Array.from(new Set(entries.map(e => e.category))).sort();
+
+  // Group entries by date for month view
+  const entriesByDate = filtered.reduce<Record<string, TimeEntry[]>>((acc, e) => {
+    acc[e.date] = acc[e.date] || [];
+    acc[e.date].push(e);
+    return acc;
+  }, {});
+  const allMonthDates = viewMode === "month" ? eachDayOfInterval({ start: monthStartDate, end: monthEndDate }) : [];
 
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center justify-between">
         <div className="flex items-center gap-2">
-          <Button variant="ghost" size="icon" onClick={navigateBack}><ChevronLeft className="w-5 h-5" /></Button>
-          <p className="font-medium text-sm min-w-[200px] text-center">{displayTitle}</p>
-          <Button variant="ghost" size="icon" onClick={navigateForward}><ChevronRight className="w-5 h-5" /></Button>
+          <Button variant="ghost" size="icon" onClick={navigateBack} data-testid="button-nav-back"><ChevronLeft className="w-5 h-5" /></Button>
+          <p className="font-medium text-sm min-w-[200px] text-center" data-testid="text-display-title">{displayTitle}</p>
+          <Button variant="ghost" size="icon" onClick={navigateForward} data-testid="button-nav-forward"><ChevronRight className="w-5 h-5" /></Button>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          <Select value={viewMode} onValueChange={(v) => setViewMode(v as "day" | "week")}>
+          <Select value={viewMode} onValueChange={(v) => setViewMode(v as "day" | "week" | "month")} data-testid="select-view-mode">
             <SelectTrigger className="w-[100px] h-9 text-sm"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="day">Day</SelectItem>
               <SelectItem value="week">Week</SelectItem>
+              <SelectItem value="month" data-testid="option-month">Month</SelectItem>
             </SelectContent>
           </Select>
-          <Select value={filterEmployee} onValueChange={setFilterEmployee}>
-            <SelectTrigger className="w-[150px] h-9 text-sm"><SelectValue placeholder="All Employees" /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Employees</SelectItem>
-              {users.map(u => (
-                <SelectItem key={u.id} value={String(u.id)}>{u.name}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Select value={filterCategory} onValueChange={setFilterCategory}>
-            <SelectTrigger className="w-[140px] h-9 text-sm"><SelectValue placeholder="All Activities" /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Activities</SelectItem>
-              {categories.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
-            </SelectContent>
-          </Select>
-          <Button variant="outline" size="sm" onClick={handleExportCSV} className="h-9" data-testid="button-export-csv">
-            <Download className="w-4 h-4 mr-1" /> Export CSV
-          </Button>
+          {viewMode === "month" ? (
+            <Select value={monthEmployee} onValueChange={setMonthEmployee}>
+              <SelectTrigger className="w-[180px] h-9 text-sm" data-testid="select-month-employee"><SelectValue placeholder="Select Employee" /></SelectTrigger>
+              <SelectContent>
+                {users.filter(u => u.role !== "admin").map(u => (
+                  <SelectItem key={u.id} value={String(u.id)}>{u.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : (
+            <>
+              <Select value={filterEmployee} onValueChange={setFilterEmployee}>
+                <SelectTrigger className="w-[150px] h-9 text-sm"><SelectValue placeholder="All Employees" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Employees</SelectItem>
+                  {users.map(u => (
+                    <SelectItem key={u.id} value={String(u.id)}>{u.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Select value={filterCategory} onValueChange={setFilterCategory}>
+                <SelectTrigger className="w-[140px] h-9 text-sm"><SelectValue placeholder="All Activities" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Activities</SelectItem>
+                  {categories.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </>
+          )}
+          {viewMode !== "month" && (
+            <Button variant="outline" size="sm" onClick={handleExportCSV} className="h-9" data-testid="button-export-csv">
+              <Download className="w-4 h-4 mr-1" /> Export CSV
+            </Button>
+          )}
+          {viewMode === "month" && (
+            <Button variant="default" size="sm" onClick={handleDownloadPDF} className="h-9" data-testid="button-download-pdf">
+              <Printer className="w-4 h-4 mr-1" /> Download PDF
+            </Button>
+          )}
         </div>
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <Card className="p-4">
-          <div className="flex items-center gap-2 mb-1"><Users className="w-4 h-4 text-muted-foreground" /><span className="text-xs text-muted-foreground font-medium">Employees</span></div>
-          <p className="text-xl font-semibold">{Object.keys(byEmployee).length}</p>
+          <div className="flex items-center gap-2 mb-1"><Users className="w-4 h-4 text-muted-foreground" /><span className="text-xs text-muted-foreground font-medium">{viewMode === "month" ? "Days Worked" : "Employees"}</span></div>
+          <p className="text-xl font-semibold">{viewMode === "month" ? Object.keys(entriesByDate).length : Object.keys(byEmployee).length}</p>
         </Card>
         <Card className="p-4">
           <div className="flex items-center gap-2 mb-1"><FileSpreadsheet className="w-4 h-4 text-muted-foreground" /><span className="text-xs text-muted-foreground font-medium">Entries</span></div>
@@ -611,42 +840,115 @@ function TimesheetsTab({ user }: { user: AuthUser }) {
         </Card>
       )}
 
-      <div className="space-y-4">
-        <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Entries by Employee</h2>
-        {isLoading ? (
-          <div className="space-y-3">{[1,2].map(i => <Card key={i} className="p-4 animate-pulse"><div className="h-4 bg-muted rounded w-1/3 mb-2" /><div className="h-3 bg-muted rounded w-1/2" /></Card>)}</div>
-        ) : Object.keys(byEmployee).length === 0 ? (
-          <Card className="p-8 text-center"><Users className="w-8 h-8 text-muted-foreground mx-auto mb-2" /><p className="text-sm text-muted-foreground">No entries for this period</p></Card>
-        ) : (
-          Object.entries(byEmployee).sort(([a],[b]) => a.localeCompare(b)).map(([name, empEntries]) => {
-            const empTotal = empEntries.reduce((s, e) => s + (e.durationMinutes || 0), 0);
-            const isActive = empEntries.some(e => e.isRunning);
-            return (
-              <Card key={name} className="p-4 space-y-3">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <h3 className="font-semibold text-sm">{name}</h3>
-                    {isActive && <span className="inline-flex items-center gap-1 text-xs text-green-600 dark:text-green-400 font-medium"><div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />On site</span>}
-                  </div>
-                  <span className="text-sm font-semibold">{formatDuration(empTotal)}</span>
-                </div>
-                <div className="space-y-1.5">
-                  {empEntries.sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime)).map(entry => (
-                    <div key={entry.id} className="flex items-center gap-2 text-sm py-1.5 border-b last:border-b-0">
-                      {viewMode === "week" && <span className="text-xs text-muted-foreground w-16 shrink-0">{format(new Date(entry.date + "T00:00"), "EEE d")}</span>}
-                      <Badge className={`text-xs shrink-0 ${categoryColors[entry.category] || ""}`}>{categoryIcons[entry.category]}<span className="ml-1">{entry.category}</span></Badge>
-                      <span className="text-muted-foreground text-xs">{entry.startTime}{entry.endTime ? `-${entry.endTime}` : ""}</span>
-                      {entry.durationMinutes != null && <span className="text-xs font-medium">{formatDuration(entry.durationMinutes)}</span>}
-                      {entry.siteName && <span className="text-xs text-muted-foreground truncate flex items-center gap-0.5"><MapPin className="w-3 h-3 shrink-0" />{entry.siteName}</span>}
-                      {entry.isRunning && <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse shrink-0" />}
+      {/* Month view: entries grouped by day */}
+      {viewMode === "month" ? (
+        <div className="space-y-3">
+          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Daily Breakdown</h2>
+          {isLoading ? (
+            <div className="space-y-3">{[1,2,3].map(i => <Card key={i} className="p-4 animate-pulse"><div className="h-4 bg-muted rounded w-1/3 mb-2" /><div className="h-3 bg-muted rounded w-1/2" /></Card>)}</div>
+          ) : (
+            allMonthDates.map(dateObj => {
+              const dStr = format(dateObj, "yyyy-MM-dd");
+              const dayEntries = (entriesByDate[dStr] || []).sort((a, b) => a.startTime.localeCompare(b.startTime));
+              const dayTotal = dayEntries.reduce((s, e) => s + (e.durationMinutes || 0), 0);
+              const weekend = isWeekend(dateObj);
+              const daySession = monthDaySessions.find(s => s.date === dStr);
+              const hasData = dayEntries.length > 0 || daySession;
+
+              if (!hasData && weekend) return null; // skip empty weekends
+
+              return (
+                <Card key={dStr} className={`overflow-hidden ${!hasData ? "opacity-50" : ""}`}>
+                  <div className={`flex items-center justify-between px-4 py-2 ${weekend ? "bg-muted/50" : "bg-primary/10"}`}>
+                    <div className="flex items-center gap-2">
+                      <CalendarDays className="w-4 h-4 text-muted-foreground" />
+                      <span className="text-sm font-semibold">{format(dateObj, "EEEE, d MMMM")}</span>
+                      {weekend && <Badge variant="secondary" className="text-xs">Weekend</Badge>}
+                      {daySession && (
+                        <span className="text-xs text-muted-foreground ml-2">
+                          Day: {daySession.startTime}{daySession.endTime ? ` - ${daySession.endTime}` : " (ongoing)"}
+                        </span>
+                      )}
                     </div>
-                  ))}
-                </div>
-              </Card>
-            );
-          })
-        )}
-      </div>
+                    <span className="text-sm font-semibold">{dayTotal > 0 ? formatDuration(dayTotal) : ""}</span>
+                  </div>
+                  {dayEntries.length > 0 ? (
+                    <div className="divide-y">
+                      {dayEntries.map(entry => (
+                        <div key={entry.id} className="flex items-center gap-3 px-4 py-2.5 text-sm" data-testid={`month-entry-${entry.id}`}>
+                          <span className="text-muted-foreground text-xs font-mono w-[90px] shrink-0">
+                            {entry.startTime}{entry.endTime ? ` - ${entry.endTime}` : ""}
+                          </span>
+                          <Badge className={`text-xs shrink-0 ${categoryColors[entry.category] || ""}`}>
+                            {categoryIcons[entry.category]}<span className="ml-1">{entry.category}</span>
+                          </Badge>
+                          {entry.durationMinutes != null && <span className="text-xs font-medium shrink-0">{formatDuration(entry.durationMinutes)}</span>}
+                          {entry.siteName && (
+                            <span className="text-xs text-muted-foreground truncate flex items-center gap-0.5">
+                              <MapPin className="w-3 h-3 shrink-0" />{entry.siteName}
+                            </span>
+                          )}
+                          {entry.notes && <span className="text-xs text-muted-foreground truncate italic">{entry.notes}</span>}
+                          {entry.isRunning && <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse shrink-0" />}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="px-4 py-3 text-xs text-muted-foreground italic">No entries</div>
+                  )}
+                </Card>
+              );
+            })
+          )}
+          {/* Grand total bar */}
+          {filtered.length > 0 && (
+            <Card className="bg-primary text-primary-foreground">
+              <div className="flex items-center justify-between px-4 py-3">
+                <span className="font-semibold">Month Total</span>
+                <span className="font-bold text-lg">{formatDuration(totalMinutes)}</span>
+              </div>
+            </Card>
+          )}
+        </div>
+      ) : (
+        /* Day / Week view: entries by employee */
+        <div className="space-y-4">
+          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Entries by Employee</h2>
+          {isLoading ? (
+            <div className="space-y-3">{[1,2].map(i => <Card key={i} className="p-4 animate-pulse"><div className="h-4 bg-muted rounded w-1/3 mb-2" /><div className="h-3 bg-muted rounded w-1/2" /></Card>)}</div>
+          ) : Object.keys(byEmployee).length === 0 ? (
+            <Card className="p-8 text-center"><Users className="w-8 h-8 text-muted-foreground mx-auto mb-2" /><p className="text-sm text-muted-foreground">No entries for this period</p></Card>
+          ) : (
+            Object.entries(byEmployee).sort(([a],[b]) => a.localeCompare(b)).map(([name, empEntries]) => {
+              const empTotal = empEntries.reduce((s, e) => s + (e.durationMinutes || 0), 0);
+              const isActive = empEntries.some(e => e.isRunning);
+              return (
+                <Card key={name} className="p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <h3 className="font-semibold text-sm">{name}</h3>
+                      {isActive && <span className="inline-flex items-center gap-1 text-xs text-green-600 dark:text-green-400 font-medium"><div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />On site</span>}
+                    </div>
+                    <span className="text-sm font-semibold">{formatDuration(empTotal)}</span>
+                  </div>
+                  <div className="space-y-1.5">
+                    {empEntries.sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime)).map(entry => (
+                      <div key={entry.id} className="flex items-center gap-2 text-sm py-1.5 border-b last:border-b-0">
+                        {viewMode === "week" && <span className="text-xs text-muted-foreground w-16 shrink-0">{format(new Date(entry.date + "T00:00"), "EEE d")}</span>}
+                        <Badge className={`text-xs shrink-0 ${categoryColors[entry.category] || ""}`}>{categoryIcons[entry.category]}<span className="ml-1">{entry.category}</span></Badge>
+                        <span className="text-muted-foreground text-xs">{entry.startTime}{entry.endTime ? `-${entry.endTime}` : ""}</span>
+                        {entry.durationMinutes != null && <span className="text-xs font-medium">{formatDuration(entry.durationMinutes)}</span>}
+                        {entry.siteName && <span className="text-xs text-muted-foreground truncate flex items-center gap-0.5"><MapPin className="w-3 h-3 shrink-0" />{entry.siteName}</span>}
+                        {entry.isRunning && <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse shrink-0" />}
+                      </div>
+                    ))}
+                  </div>
+                </Card>
+              );
+            })
+          )}
+        </div>
+      )}
     </div>
   );
 }
