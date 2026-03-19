@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { Button } from "@/components/ui/button";
@@ -14,11 +14,12 @@ import {
   ChevronLeft, ChevronRight, Download, Flame, LogOut, Clock,
   Truck, ShoppingBag, GraduationCap, Building2, Wrench,
   Fuel, Zap, Settings, Coffee, MapPin, ArrowLeft, Users, FileSpreadsheet,
-  UserPlus, Trash2, KeyRound, CheckCircle2, XCircle, TreePalm, Edit, Save, X
+  UserPlus, Trash2, KeyRound, CheckCircle2, XCircle, TreePalm, Edit, Save, X,
+  Activity, Eye, PlayCircle, StopCircle, Navigation, Map as MapIcon
 } from "lucide-react";
 import { format, addDays, subDays, startOfWeek, endOfWeek, subWeeks, addWeeks } from "date-fns";
 import { Link } from "wouter";
-import type { TimeEntry, LeaveRequest } from "@shared/schema";
+import type { TimeEntry, LeaveRequest, DaySession, GpsWaypoint } from "@shared/schema";
 import type { AuthUser } from "@/App";
 
 const categoryIcons: Record<string, React.ReactNode> = {
@@ -59,8 +60,7 @@ function formatDuration(minutes: number): string {
 type UserInfo = { id: number; name: string; email: string; role: string; holidayAllowance: number };
 
 export default function AdminPage({ user, onLogout }: { user: AuthUser; onLogout: () => void }) {
-  const { toast } = useToast();
-  const [activeTab, setActiveTab] = useState("timesheets");
+  const [activeTab, setActiveTab] = useState("live");
 
   return (
     <div className="min-h-screen bg-background">
@@ -84,11 +84,13 @@ export default function AdminPage({ user, onLogout }: { user: AuthUser; onLogout
       <main className="max-w-5xl mx-auto px-4 py-6">
         <Tabs value={activeTab} onValueChange={setActiveTab}>
           <TabsList className="mb-6">
+            <TabsTrigger value="live" data-testid="tab-live"><Activity className="w-4 h-4 mr-1" /> Live</TabsTrigger>
             <TabsTrigger value="timesheets" data-testid="tab-timesheets"><FileSpreadsheet className="w-4 h-4 mr-1" /> Timesheets</TabsTrigger>
             <TabsTrigger value="users" data-testid="tab-users"><Users className="w-4 h-4 mr-1" /> Users</TabsTrigger>
             <TabsTrigger value="leave" data-testid="tab-leave"><TreePalm className="w-4 h-4 mr-1" /> Leave</TabsTrigger>
           </TabsList>
 
+          <TabsContent value="live"><LiveTab user={user} /></TabsContent>
           <TabsContent value="timesheets"><TimesheetsTab user={user} /></TabsContent>
           <TabsContent value="users"><UsersTab user={user} /></TabsContent>
           <TabsContent value="leave"><LeaveTab user={user} /></TabsContent>
@@ -98,6 +100,218 @@ export default function AdminPage({ user, onLogout }: { user: AuthUser; onLogout
           <PerplexityAttribution />
         </div>
       </main>
+    </div>
+  );
+}
+
+// ===== LIVE TAB — See all employees' current status =====
+function LiveTab({ user }: { user: AuthUser }) {
+  const today = format(new Date(), "yyyy-MM-dd");
+  const [expandedUser, setExpandedUser] = useState<number | null>(null);
+  const [mapSession, setMapSession] = useState<number | null>(null);
+
+  const { data: users = [] } = useQuery<UserInfo[]>({
+    queryKey: ["/api/users"],
+    queryFn: async () => { const r = await apiRequest("GET", "/api/users"); return r.json(); },
+  });
+
+  const { data: todayEntries = [] } = useQuery<TimeEntry[]>({
+    queryKey: ["/api/entries/range", today, today],
+    queryFn: async () => { const r = await apiRequest("GET", `/api/entries/range?startDate=${today}&endDate=${today}`); return r.json(); },
+    refetchInterval: 15000,
+  });
+
+  const { data: todaySessions = [] } = useQuery<DaySession[]>({
+    queryKey: ["/api/day-sessions/all", today],
+    queryFn: async () => { const r = await apiRequest("GET", `/api/day-sessions/all?date=${today}`); return r.json(); },
+    refetchInterval: 15000,
+  });
+
+  const { data: waypoints = [] } = useQuery<GpsWaypoint[]>({
+    queryKey: ["/api/gps-waypoints", mapSession],
+    queryFn: async () => {
+      if (!mapSession) return [];
+      const r = await apiRequest("GET", `/api/gps-waypoints?daySessionId=${mapSession}`);
+      return r.json();
+    },
+    enabled: !!mapSession,
+  });
+
+  const nonAdminUsers = users.filter(u => u.role !== "admin");
+  const activeTimers = todayEntries.filter(e => e.isRunning);
+  const activeDaySessions = todaySessions.filter(s => s.isActive);
+  const totalTodayMinutes = todayEntries.reduce((s, e) => s + (e.durationMinutes || 0), 0);
+
+  return (
+    <div className="space-y-6">
+      {/* Summary cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <Card className="p-4">
+          <div className="flex items-center gap-2 mb-1"><Users className="w-4 h-4 text-muted-foreground" /><span className="text-xs text-muted-foreground font-medium">Team</span></div>
+          <p className="text-xl font-semibold">{nonAdminUsers.length}</p>
+        </Card>
+        <Card className="p-4">
+          <div className="flex items-center gap-2 mb-1"><div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" /><span className="text-xs text-muted-foreground font-medium">Day Started</span></div>
+          <p className="text-xl font-semibold">{activeDaySessions.length}</p>
+        </Card>
+        <Card className="p-4">
+          <div className="flex items-center gap-2 mb-1"><PlayCircle className="w-4 h-4 text-green-500" /><span className="text-xs text-muted-foreground font-medium">Active Timers</span></div>
+          <p className="text-xl font-semibold">{activeTimers.length}</p>
+        </Card>
+        <Card className="p-4">
+          <div className="flex items-center gap-2 mb-1"><Clock className="w-4 h-4 text-muted-foreground" /><span className="text-xs text-muted-foreground font-medium">Total Today</span></div>
+          <p className="text-xl font-semibold">{formatDuration(totalTodayMinutes)}</p>
+        </Card>
+      </div>
+
+      {/* Employee status list */}
+      <div className="space-y-3">
+        <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">Team Status — {format(new Date(), "EEEE, d MMMM")}</h2>
+
+        {nonAdminUsers.length === 0 ? (
+          <Card className="p-8 text-center">
+            <Users className="w-8 h-8 text-muted-foreground mx-auto mb-2" />
+            <p className="text-sm text-muted-foreground">No engineers or subcontractors yet. Add users from the Users tab.</p>
+          </Card>
+        ) : (
+          nonAdminUsers.map(emp => {
+            const empEntries = todayEntries.filter(e => e.userId === emp.id);
+            const empSession = todaySessions.find(s => s.userId === emp.id);
+            const runningEntry = empEntries.find(e => e.isRunning);
+            const empTotal = empEntries.reduce((s, e) => s + (e.durationMinutes || 0), 0);
+            const isExpanded = expandedUser === emp.id;
+
+            let statusLabel = "Not started";
+            let statusColor = "bg-slate-100 text-slate-600";
+            if (empSession?.isActive && runningEntry) {
+              statusLabel = `Working — ${runningEntry.category}`;
+              statusColor = "bg-green-100 text-green-700";
+            } else if (empSession?.isActive) {
+              statusLabel = "Day started (idle)";
+              statusColor = "bg-amber-100 text-amber-700";
+            } else if (empSession && !empSession.isActive) {
+              statusLabel = "Day ended";
+              statusColor = "bg-blue-100 text-blue-700";
+            } else if (empEntries.length > 0 && !runningEntry) {
+              statusLabel = "Has entries (no day tracker)";
+              statusColor = "bg-slate-100 text-slate-700";
+            } else if (runningEntry) {
+              statusLabel = `Working — ${runningEntry.category}`;
+              statusColor = "bg-green-100 text-green-700";
+            }
+
+            return (
+              <Card key={emp.id} className="overflow-hidden" data-testid={`card-live-${emp.id}`}>
+                <button
+                  className="w-full p-4 flex items-center justify-between text-left hover:bg-muted/30 transition-colors"
+                  onClick={() => setExpandedUser(isExpanded ? null : emp.id)}
+                  data-testid={`button-expand-${emp.id}`}
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="relative">
+                      <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center text-primary font-semibold text-sm">
+                        {emp.name.charAt(0).toUpperCase()}
+                      </div>
+                      {(empSession?.isActive || runningEntry) && (
+                        <div className="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full bg-green-500 border-2 border-background" />
+                      )}
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <p className="font-medium text-sm">{emp.name}</p>
+                        <Badge variant="secondary" className="text-xs">{emp.role}</Badge>
+                      </div>
+                      <div className="flex items-center gap-2 mt-0.5">
+                        <Badge className={`text-xs ${statusColor}`}>{statusLabel}</Badge>
+                        {empSession?.isActive && empSession.startTime && (
+                          <span className="text-xs text-muted-foreground">since {empSession.startTime}</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-sm font-semibold">{formatDuration(empTotal)}</p>
+                    <p className="text-xs text-muted-foreground">{empEntries.length} entries</p>
+                  </div>
+                </button>
+
+                {/* Expanded detail */}
+                {isExpanded && (
+                  <div className="border-t px-4 py-3 space-y-3 bg-muted/10">
+                    {/* Day session info */}
+                    {empSession && (
+                      <div className="flex items-center gap-2 text-sm">
+                        <Clock className="w-4 h-4 text-muted-foreground" />
+                        <span className="font-medium">Day:</span>
+                        <span>{empSession.startTime}</span>
+                        {empSession.endTime ? (
+                          <><span>—</span><span>{empSession.endTime}</span><span className="text-muted-foreground">({formatDuration(empSession.totalMinutes || 0)})</span></>
+                        ) : (
+                          <span className="text-green-600 font-medium">Active</span>
+                        )}
+                        {empSession.startLat && (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); setMapSession(mapSession === empSession.id ? null : empSession.id); }}
+                            className="ml-auto flex items-center gap-1 text-xs text-primary hover:underline"
+                            data-testid={`button-map-${emp.id}`}
+                          >
+                            <MapIcon className="w-3 h-3" /> View Journey
+                          </button>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Journey Map */}
+                    {mapSession === empSession?.id && waypoints.length > 0 && (
+                      <Card className="p-3 bg-background">
+                        <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2 flex items-center gap-1">
+                          <Navigation className="w-3 h-3" /> Journey Waypoints
+                        </h4>
+                        <div className="space-y-2">
+                          {waypoints.map((wp, i) => (
+                            <div key={wp.id} className="flex items-start gap-3">
+                              <div className="flex flex-col items-center">
+                                <div className={`w-2.5 h-2.5 rounded-full shrink-0 mt-1 ${wp.eventType === "day_start" ? "bg-green-500" : wp.eventType === "day_end" ? "bg-red-500" : "bg-primary"}`} />
+                                {i < waypoints.length - 1 && <div className="w-px h-6 bg-border" />}
+                              </div>
+                              <div>
+                                <p className="text-xs font-medium">{wp.label || wp.eventType.replace(/_/g, " ")}</p>
+                                <p className="text-xs text-muted-foreground">
+                                  {format(new Date(wp.timestamp), "HH:mm")} — {wp.lat}, {wp.lng}
+                                </p>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </Card>
+                    )}
+
+                    {/* Today's entries */}
+                    {empEntries.length === 0 ? (
+                      <p className="text-sm text-muted-foreground">No time entries today</p>
+                    ) : (
+                      <div className="space-y-1.5">
+                        {empEntries.sort((a, b) => a.startTime.localeCompare(b.startTime)).map(entry => (
+                          <div key={entry.id} className="flex items-center gap-2 text-sm py-1.5 border-b last:border-b-0">
+                            <Badge className={`text-xs shrink-0 ${categoryColors[entry.category] || ""}`}>
+                              {categoryIcons[entry.category]}<span className="ml-1">{entry.category}</span>
+                            </Badge>
+                            <span className="text-muted-foreground text-xs">{entry.startTime}{entry.endTime ? `-${entry.endTime}` : ""}</span>
+                            {entry.durationMinutes != null && <span className="text-xs font-medium">{formatDuration(entry.durationMinutes)}</span>}
+                            {entry.siteName && <span className="text-xs text-muted-foreground truncate flex items-center gap-0.5"><MapPin className="w-3 h-3 shrink-0" />{entry.siteName}</span>}
+                            {entry.isRunning && <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse shrink-0" />}
+                            {entry.startLat && <Navigation className="w-3 h-3 text-muted-foreground shrink-0" />}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </Card>
+            );
+          })
+        )}
+      </div>
     </div>
   );
 }
@@ -183,7 +397,7 @@ function TimesheetsTab({ user }: { user: AuthUser }) {
             <SelectTrigger className="w-[150px] h-9 text-sm"><SelectValue placeholder="All Employees" /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Employees</SelectItem>
-              {users.filter(u => u.role === "engineer" || entries.some(e => e.userId === u.id)).map(u => (
+              {users.map(u => (
                 <SelectItem key={u.id} value={String(u.id)}>{u.name}</SelectItem>
               ))}
             </SelectContent>
@@ -403,10 +617,11 @@ function UsersTab({ user }: { user: AuthUser }) {
               </div>
               <div className="space-y-2">
                 <Label>Role</Label>
-                <Select value={inviteRole} onValueChange={setInviteRole}>
+                <Select value={inviteRole} onValueChange={(v) => { setInviteRole(v); if (v === "subcontractor") setInviteHoliday("0"); else if (inviteHoliday === "0") setInviteHoliday("28"); }}>
                   <SelectTrigger data-testid="select-invite-role"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="engineer">Engineer</SelectItem>
+                    <SelectItem value="subcontractor">Subcontractor</SelectItem>
                     <SelectItem value="admin">Admin</SelectItem>
                   </SelectContent>
                 </Select>
@@ -433,10 +648,11 @@ function UsersTab({ user }: { user: AuthUser }) {
                   <Input value={editEmail} onChange={e => setEditEmail(e.target.value)} placeholder="Email" data-testid="input-edit-email" />
                 </div>
                 <div className="grid grid-cols-2 gap-3">
-                  <Select value={editRole} onValueChange={setEditRole}>
+                  <Select value={editRole} onValueChange={(v) => { setEditRole(v); if (v === "subcontractor") setEditHoliday("0"); }}>
                     <SelectTrigger data-testid="select-edit-role"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="engineer">Engineer</SelectItem>
+                      <SelectItem value="subcontractor">Subcontractor</SelectItem>
                       <SelectItem value="admin">Admin</SelectItem>
                     </SelectContent>
                   </Select>
@@ -476,10 +692,10 @@ function UsersTab({ user }: { user: AuthUser }) {
                   <div>
                     <div className="flex items-center gap-2">
                       <p className="font-medium text-sm">{u.name}</p>
-                      <Badge variant={u.role === "admin" ? "default" : "secondary"} className="text-xs">{u.role}</Badge>
+                      <Badge variant={u.role === "admin" ? "default" : u.role === "subcontractor" ? "outline" : "secondary"} className="text-xs">{u.role}</Badge>
                     </div>
                     <p className="text-xs text-muted-foreground">{u.email}</p>
-                    <p className="text-xs text-muted-foreground">{u.holidayAllowance} days holiday/year</p>
+                    {u.role !== "subcontractor" && <p className="text-xs text-muted-foreground">{u.holidayAllowance} days holiday/year</p>}
                   </div>
                 </div>
                 <div className="flex items-center gap-1">

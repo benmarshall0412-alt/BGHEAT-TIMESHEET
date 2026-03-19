@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import type { Server } from "http";
 import { storage } from "./storage";
-import { insertTimeEntrySchema, insertAddressSchema, loginSchema, changePasswordSchema, leaveRequestSchema } from "@shared/schema";
+import { insertTimeEntrySchema, insertAddressSchema, loginSchema, changePasswordSchema, leaveRequestSchema, insertDaySessionSchema, insertGpsWaypointSchema } from "@shared/schema";
 import { z } from "zod";
 
 // UK Bank Holidays 2026
@@ -294,4 +294,149 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/api/bank-holidays", async (_req, res) => {
     res.json(UK_BANK_HOLIDAYS_2026);
   });
+
+  // ===== DAY SESSIONS =====
+  // Start a day
+  app.post("/api/day-sessions", async (req, res) => {
+    const { userId, employeeName, lat, lng } = req.body;
+    if (!userId || !employeeName) return res.status(400).json({ error: "userId and employeeName required" });
+
+    // Check for existing active session
+    const existing = await storage.getActiveDaySession(userId);
+    if (existing) return res.status(409).json({ error: "You already have an active day session. Stop it first." });
+
+    const now = new Date();
+    const session = await storage.createDaySession({
+      userId,
+      employeeName,
+      date: format_date(now),
+      startTime: format_time(now),
+      endTime: null,
+      totalMinutes: null,
+      isActive: true,
+      startLat: lat || null,
+      startLng: lng || null,
+      endLat: null,
+      endLng: null,
+    });
+
+    // Log GPS waypoint for day start
+    if (lat && lng) {
+      await storage.createGpsWaypoint({
+        daySessionId: session.id,
+        userId,
+        timestamp: now.toISOString(),
+        eventType: "day_start",
+        label: "Day started",
+        lat,
+        lng,
+      });
+    }
+
+    res.status(201).json(session);
+  });
+
+  // Get active day session
+  app.get("/api/day-sessions/active", async (req, res) => {
+    const { userId } = req.query;
+    if (!userId) return res.status(400).json({ error: "userId required" });
+    const session = await storage.getActiveDaySession(Number(userId));
+    res.json(session || null);
+  });
+
+  // End a day session
+  app.post("/api/day-sessions/:id/end", async (req, res) => {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });
+
+    const session = await storage.getDaySessionById(id);
+    if (!session) return res.status(404).json({ error: "Session not found" });
+    if (!session.isActive) return res.status(400).json({ error: "Session already ended" });
+
+    const now = new Date();
+    const startTime = new Date(`${session.date}T${session.startTime}`);
+    const totalMinutes = Math.round((now.getTime() - startTime.getTime()) / 60000);
+
+    const { lat, lng } = req.body;
+    const ended = await storage.endDaySession(id, format_time(now), totalMinutes, lat || undefined, lng || undefined);
+
+    // Log GPS waypoint for day end
+    if (lat && lng) {
+      await storage.createGpsWaypoint({
+        daySessionId: id,
+        userId: session.userId,
+        timestamp: now.toISOString(),
+        eventType: "day_end",
+        label: "Day ended",
+        lat,
+        lng,
+      });
+    }
+
+    // Also stop any running time entries for this user
+    const running = await storage.getRunningEntry(session.userId);
+    if (running) {
+      const entryStart = new Date(`${running.date}T${running.startTime}`);
+      await storage.updateTimeEntry(running.id, {
+        endTime: format_time(now),
+        durationMinutes: Math.round((now.getTime() - entryStart.getTime()) / 60000),
+        isRunning: false,
+        endLat: lat || null,
+        endLng: lng || null,
+      });
+    }
+
+    res.json(ended);
+  });
+
+  // Get day sessions by date for user
+  app.get("/api/day-sessions", async (req, res) => {
+    const { userId, date } = req.query;
+    if (!userId || !date) return res.status(400).json({ error: "userId and date required" });
+    const sessions = await storage.getDaySessionsByDate(Number(userId), date as string);
+    res.json(sessions);
+  });
+
+  // Get day sessions for all users on a date (admin view)
+  app.get("/api/day-sessions/all", async (req, res) => {
+    const { date } = req.query;
+    if (!date) return res.status(400).json({ error: "date required" });
+    const sessions = await storage.getAllDaySessionsForDate(date as string);
+    res.json(sessions);
+  });
+
+  // ===== GPS WAYPOINTS =====
+  app.post("/api/gps-waypoints", async (req, res) => {
+    const { daySessionId, userId, eventType, label, lat, lng } = req.body;
+    if (!daySessionId || !userId || !eventType || !lat || !lng) {
+      return res.status(400).json({ error: "daySessionId, userId, eventType, lat, lng required" });
+    }
+    const wp = await storage.createGpsWaypoint({
+      daySessionId,
+      userId,
+      timestamp: new Date().toISOString(),
+      eventType,
+      label: label || null,
+      lat,
+      lng,
+    });
+    res.status(201).json(wp);
+  });
+
+  app.get("/api/gps-waypoints", async (req, res) => {
+    const { daySessionId } = req.query;
+    if (!daySessionId) return res.status(400).json({ error: "daySessionId required" });
+    const waypoints = await storage.getWaypointsBySession(Number(daySessionId));
+    res.json(waypoints);
+  });
+}
+
+// Helper: format date as yyyy-MM-dd
+function format_date(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+// Helper: format time as HH:mm
+function format_time(d: Date): string {
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }

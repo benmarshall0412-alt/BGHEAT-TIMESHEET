@@ -11,11 +11,12 @@ import {
   Play, Square, MapPin, Clock, ChevronLeft, ChevronRight,
   Truck, ShoppingBag, GraduationCap, Building2, Wrench, Flame,
   Fuel, Zap, Settings, Coffee, Trash2, Navigation, LogOut, Shield,
-  Plus, BookMarked, X, Check, TreePalm, User
+  Plus, BookMarked, X, Check, TreePalm, User, Search,
+  Sun, Moon, Map as MapIcon
 } from "lucide-react";
 import { format, addDays, subDays, startOfWeek, endOfWeek } from "date-fns";
 import { Link } from "wouter";
-import type { TimeEntry, ActivityCategory, SavedAddress } from "@shared/schema";
+import type { TimeEntry, ActivityCategory, SavedAddress, DaySession, GpsWaypoint } from "@shared/schema";
 import { activityCategories } from "@shared/schema";
 import type { AuthUser } from "@/App";
 
@@ -64,15 +65,20 @@ export default function TimesheetPage({ user, onLogout }: { user: AuthUser; onLo
   const [siteName, setSiteName] = useState("");
   const [notes, setNotes] = useState("");
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [dayElapsedSeconds, setDayElapsedSeconds] = useState(0);
   const [gpsEnabled, setGpsEnabled] = useState(true);
   const [showAddressBook, setShowAddressBook] = useState(false);
   const [newAddressName, setNewAddressName] = useState("");
   const [showAddForm, setShowAddForm] = useState(false);
+  const [addressSearch, setAddressSearch] = useState("");
+  const [showJourney, setShowJourney] = useState(false);
 
+  const isSubcontractor = user.role === "subcontractor";
   const dateStr = format(selectedDate, "yyyy-MM-dd");
   const displayDate = format(selectedDate, "EEEE, d MMMM yyyy");
   const isToday = format(new Date(), "yyyy-MM-dd") === dateStr;
 
+  // === Queries ===
   const { data: entries = [], isLoading } = useQuery<TimeEntry[]>({
     queryKey: ["/api/entries", user.id, dateStr],
     queryFn: async () => { const r = await apiRequest("GET", `/api/entries?userId=${user.id}&date=${dateStr}`); return r.json(); },
@@ -91,12 +97,30 @@ export default function TimesheetPage({ user, onLogout }: { user: AuthUser; onLo
     queryFn: async () => { const r = await apiRequest("GET", `/api/entries/week?userId=${user.id}&startDate=${weekStart}&endDate=${weekEnd}`); return r.json(); },
   });
 
-  // Saved addresses
   const { data: savedAddresses = [] } = useQuery<SavedAddress[]>({
     queryKey: ["/api/addresses"],
     queryFn: async () => { const r = await apiRequest("GET", "/api/addresses"); return r.json(); },
   });
 
+  // Day session
+  const { data: activeDaySession } = useQuery<DaySession | null>({
+    queryKey: ["/api/day-sessions/active", user.id],
+    queryFn: async () => { const r = await apiRequest("GET", `/api/day-sessions/active?userId=${user.id}`); return r.json(); },
+    refetchInterval: 15000,
+  });
+
+  // GPS waypoints for current day session
+  const { data: waypoints = [] } = useQuery<GpsWaypoint[]>({
+    queryKey: ["/api/gps-waypoints", activeDaySession?.id],
+    queryFn: async () => {
+      if (!activeDaySession?.id) return [];
+      const r = await apiRequest("GET", `/api/gps-waypoints?daySessionId=${activeDaySession.id}`);
+      return r.json();
+    },
+    enabled: !!activeDaySession?.id && showJourney,
+  });
+
+  // === Mutations ===
   const addAddressMutation = useMutation({
     mutationFn: async (address: string) => {
       const r = await apiRequest("POST", "/api/addresses", { name: newAddressName || address, address, addedBy: user.name });
@@ -104,8 +128,7 @@ export default function TimesheetPage({ user, onLogout }: { user: AuthUser; onLo
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/addresses"] });
-      setNewAddressName("");
-      setShowAddForm(false);
+      setNewAddressName(""); setShowAddForm(false);
       toast({ title: "Address saved", description: "Available for all users now" });
     },
     onError: () => toast({ title: "Already saved", description: "This address is already in the address book", variant: "destructive" }),
@@ -116,15 +139,45 @@ export default function TimesheetPage({ user, onLogout }: { user: AuthUser; onLo
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["/api/addresses"] }),
   });
 
-  useEffect(() => {
-    if (!runningEntry) { setElapsedSeconds(0); return; }
-    const start = new Date(`${runningEntry.date}T${runningEntry.startTime}`);
-    const update = () => setElapsedSeconds(Math.max(0, Math.floor((Date.now() - start.getTime()) / 1000)));
-    update();
-    const iv = setInterval(update, 1000);
-    return () => clearInterval(iv);
-  }, [runningEntry]);
+  // Day session mutations
+  const startDayMutation = useMutation({
+    mutationFn: async () => {
+      const gps = gpsEnabled ? await getGPS() : null;
+      const r = await apiRequest("POST", "/api/day-sessions", {
+        userId: user.id, employeeName: user.name,
+        lat: gps?.lat || null, lng: gps?.lng || null,
+      });
+      if (!r.ok) { const e = await r.json(); throw new Error(e.error || "Failed"); }
+      return r.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/day-sessions/active"] });
+      toast({ title: "Day started", description: "Your working day has begun. GPS logged." });
+    },
+    onError: (err: any) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
 
+  const stopDayMutation = useMutation({
+    mutationFn: async () => {
+      if (!activeDaySession) return;
+      const gps = gpsEnabled ? await getGPS() : null;
+      const r = await apiRequest("POST", `/api/day-sessions/${activeDaySession.id}/end`, {
+        lat: gps?.lat || null, lng: gps?.lng || null,
+      });
+      if (!r.ok) { const e = await r.json(); throw new Error(e.error || "Failed"); }
+      return r.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/day-sessions/active"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/entries"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/entries/running"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/entries/week"] });
+      toast({ title: "Day ended", description: "Your working day has been logged." });
+    },
+    onError: (err: any) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+  });
+
+  // Timer mutations — also log GPS waypoints
   const startMutation = useMutation({
     mutationFn: async () => {
       const now = new Date();
@@ -134,8 +187,18 @@ export default function TimesheetPage({ user, onLogout }: { user: AuthUser; onLo
         category: selectedCategory, siteName: siteName || null, notes: notes || null,
         startTime: format(now, "HH:mm"), endTime: null, durationMinutes: null, isRunning: true,
         startLat: gps?.lat || null, startLng: gps?.lng || null, endLat: null, endLng: null,
+        daySessionId: activeDaySession?.id || null,
       });
-      return r.json();
+      const entry = await r.json();
+      // Log GPS waypoint
+      if (gps && activeDaySession) {
+        await apiRequest("POST", "/api/gps-waypoints", {
+          daySessionId: activeDaySession.id, userId: user.id,
+          eventType: "activity_start", label: `Started ${selectedCategory}${siteName ? ` at ${siteName}` : ""}`,
+          lat: gps.lat, lng: gps.lng,
+        });
+      }
+      return entry;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/entries"] });
@@ -156,6 +219,14 @@ export default function TimesheetPage({ user, onLogout }: { user: AuthUser; onLo
         endTime: format(now, "HH:mm"), durationMinutes: Math.round((now.getTime() - start.getTime()) / 60000),
         isRunning: false, endLat: gps?.lat || null, endLng: gps?.lng || null,
       });
+      // Log GPS waypoint
+      if (gps && activeDaySession) {
+        await apiRequest("POST", "/api/gps-waypoints", {
+          daySessionId: activeDaySession.id, userId: user.id,
+          eventType: "activity_stop", label: `Stopped ${runningEntry.category}`,
+          lat: gps.lat, lng: gps.lng,
+        });
+      }
       return r.json();
     },
     onSuccess: () => {
@@ -175,9 +246,29 @@ export default function TimesheetPage({ user, onLogout }: { user: AuthUser; onLo
     },
   });
 
+  // === Elapsed time effects ===
+  useEffect(() => {
+    if (!runningEntry) { setElapsedSeconds(0); return; }
+    const start = new Date(`${runningEntry.date}T${runningEntry.startTime}`);
+    const update = () => setElapsedSeconds(Math.max(0, Math.floor((Date.now() - start.getTime()) / 1000)));
+    update();
+    const iv = setInterval(update, 1000);
+    return () => clearInterval(iv);
+  }, [runningEntry]);
+
+  useEffect(() => {
+    if (!activeDaySession) { setDayElapsedSeconds(0); return; }
+    const start = new Date(`${activeDaySession.date}T${activeDaySession.startTime}`);
+    const update = () => setDayElapsedSeconds(Math.max(0, Math.floor((Date.now() - start.getTime()) / 1000)));
+    update();
+    const iv = setInterval(update, 1000);
+    return () => clearInterval(iv);
+  }, [activeDaySession]);
+
   const totalDayMinutes = entries.reduce((s, e) => s + (e.durationMinutes || 0), 0);
   const totalWeekMinutes = weekEntries.reduce((s, e) => s + (e.durationMinutes || 0), 0);
   const elapsed = `${String(Math.floor(elapsedSeconds / 3600)).padStart(2, "0")}:${String(Math.floor((elapsedSeconds % 3600) / 60)).padStart(2, "0")}:${String(elapsedSeconds % 60).padStart(2, "0")}`;
+  const dayElapsed = `${String(Math.floor(dayElapsedSeconds / 3600)).padStart(2, "0")}:${String(Math.floor((dayElapsedSeconds % 3600) / 60)).padStart(2, "0")}:${String(dayElapsedSeconds % 60).padStart(2, "0")}`;
 
   return (
     <div className="min-h-screen bg-background">
@@ -192,7 +283,9 @@ export default function TimesheetPage({ user, onLogout }: { user: AuthUser; onLo
             <button onClick={() => setGpsEnabled(!gpsEnabled)} className={`flex items-center gap-1 text-xs px-2 py-1 rounded-full transition-colors ${gpsEnabled ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400" : "bg-muted text-muted-foreground"}`}>
               <Navigation className="w-3 h-3" /> GPS {gpsEnabled ? "On" : "Off"}
             </button>
-            <Link href="/leave"><button className="flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-primary/10 text-primary" data-testid="link-leave"><TreePalm className="w-3 h-3" /> Leave</button></Link>
+            {!isSubcontractor && (
+              <Link href="/leave"><button className="flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-primary/10 text-primary" data-testid="link-leave"><TreePalm className="w-3 h-3" /> Leave</button></Link>
+            )}
             {user.role === "admin" && (
               <Link href="/admin"><button className="flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-primary/10 text-primary" data-testid="link-admin"><Shield className="w-3 h-3" /> Admin</button></Link>
             )}
@@ -210,7 +303,75 @@ export default function TimesheetPage({ user, onLogout }: { user: AuthUser; onLo
           <Button variant="ghost" size="icon" onClick={() => setSelectedDate(d => addDays(d, 1))}><ChevronRight className="w-5 h-5" /></Button>
         </div>
 
-        {/* Timer Card */}
+        {/* Day Tracker Card */}
+        <Card className={`p-4 ${activeDaySession ? "border-green-300 dark:border-green-800 bg-green-50/30 dark:bg-green-950/10" : ""}`}>
+          {activeDaySession ? (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Sun className="w-4 h-4 text-green-600" />
+                  <span className="text-sm font-semibold text-green-700 dark:text-green-400">Day Active</span>
+                </div>
+                <span className="text-sm font-mono text-muted-foreground">{dayElapsed}</span>
+              </div>
+              <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                <span>Started {activeDaySession.startTime}</span>
+                {activeDaySession.startLat && <span className="inline-flex items-center gap-0.5"><MapPin className="w-3 h-3" /> GPS logged</span>}
+                <button
+                  onClick={() => setShowJourney(!showJourney)}
+                  className="ml-auto flex items-center gap-1 text-primary hover:underline"
+                  data-testid="button-toggle-journey"
+                >
+                  <MapIcon className="w-3 h-3" /> {showJourney ? "Hide" : "Journey"}
+                </button>
+              </div>
+              {/* Journey waypoints */}
+              {showJourney && waypoints.length > 0 && (
+                <div className="border rounded-lg p-3 bg-background space-y-2">
+                  <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1">
+                    <Navigation className="w-3 h-3" /> Journey Log
+                  </h4>
+                  {waypoints.map((wp, i) => (
+                    <div key={wp.id} className="flex items-start gap-3">
+                      <div className="flex flex-col items-center">
+                        <div className={`w-2.5 h-2.5 rounded-full shrink-0 mt-1 ${wp.eventType === "day_start" ? "bg-green-500" : wp.eventType === "day_end" ? "bg-red-500" : "bg-primary"}`} />
+                        {i < waypoints.length - 1 && <div className="w-px h-6 bg-border" />}
+                      </div>
+                      <div>
+                        <p className="text-xs font-medium">{wp.label || wp.eventType.replace(/_/g, " ")}</p>
+                        <p className="text-xs text-muted-foreground">{format(new Date(wp.timestamp), "HH:mm")} — {wp.lat}, {wp.lng}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <Button
+                variant="destructive" size="sm" className="w-full"
+                onClick={() => stopDayMutation.mutate()}
+                disabled={stopDayMutation.isPending}
+                data-testid="button-stop-day"
+              >
+                <Moon className="w-4 h-4 mr-2" /> Stop Day
+              </Button>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium">Start your day</p>
+                <p className="text-xs text-muted-foreground">Logs GPS and tracks your full working day</p>
+              </div>
+              <Button
+                onClick={() => startDayMutation.mutate()}
+                disabled={startDayMutation.isPending}
+                data-testid="button-start-day"
+              >
+                <Sun className="w-4 h-4 mr-2" /> Start Day
+              </Button>
+            </div>
+          )}
+        </Card>
+
+        {/* Activity Timer Card */}
         <Card className="p-5 space-y-4">
           {runningEntry ? (
             <div className="space-y-4">
@@ -256,28 +417,50 @@ export default function TimesheetPage({ user, onLogout }: { user: AuthUser; onLo
                 {/* Address Book Dropdown */}
                 {showAddressBook && (
                   <div className="border rounded-lg overflow-hidden">
-                    {savedAddresses.length === 0 && !showAddForm ? (
-                      <div className="p-3 text-center text-sm text-muted-foreground">
-                        No saved sites yet. Add one below.
-                      </div>
-                    ) : (
-                      <div className="max-h-48 overflow-y-auto">
-                        {savedAddresses.map(addr => (
-                          <button key={addr.id} onClick={() => { setSiteName(addr.address); setShowAddressBook(false); }}
-                            className="w-full flex items-center justify-between px-3 py-2.5 text-left text-sm hover:bg-muted/50 border-b last:border-b-0 transition-colors"
-                            data-testid={`button-address-${addr.id}`}>
-                            <div className="flex-1 min-w-0">
-                              <p className="font-medium truncate">{addr.name}</p>
-                              <p className="text-xs text-muted-foreground truncate">{addr.address}</p>
-                            </div>
-                            <button onClick={(e) => { e.stopPropagation(); deleteAddressMutation.mutate(addr.id); }}
-                              className="ml-2 text-muted-foreground hover:text-destructive shrink-0 p-1">
-                              <X className="w-3 h-3" />
-                            </button>
-                          </button>
-                        ))}
+                    {/* Search bar */}
+                    {savedAddresses.length > 0 && (
+                      <div className="p-2 border-b bg-muted/20">
+                        <div className="relative">
+                          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+                          <Input
+                            placeholder="Search saved sites..."
+                            value={addressSearch}
+                            onChange={e => setAddressSearch(e.target.value)}
+                            className="pl-8 h-8 text-sm"
+                            data-testid="input-search-addresses"
+                          />
+                        </div>
                       </div>
                     )}
+                    {(() => {
+                      const filteredAddresses = savedAddresses.filter(addr => {
+                        if (!addressSearch.trim()) return true;
+                        const q = addressSearch.toLowerCase();
+                        return addr.name.toLowerCase().includes(q) || addr.address.toLowerCase().includes(q);
+                      });
+                      return filteredAddresses.length === 0 && !showAddForm ? (
+                        <div className="p-3 text-center text-sm text-muted-foreground">
+                          {savedAddresses.length === 0 ? "No saved sites yet. Add one below." : "No sites match your search."}
+                        </div>
+                      ) : (
+                        <div className="max-h-48 overflow-y-auto">
+                          {filteredAddresses.map(addr => (
+                            <button key={addr.id} onClick={() => { setSiteName(addr.address); setShowAddressBook(false); setAddressSearch(""); }}
+                              className="w-full flex items-center justify-between px-3 py-2.5 text-left text-sm hover:bg-muted/50 border-b last:border-b-0 transition-colors"
+                              data-testid={`button-address-${addr.id}`}>
+                              <div className="flex-1 min-w-0">
+                                <p className="font-medium truncate">{addr.name}</p>
+                                <p className="text-xs text-muted-foreground truncate">{addr.address}</p>
+                              </div>
+                              <button onClick={(e) => { e.stopPropagation(); deleteAddressMutation.mutate(addr.id); }}
+                                className="ml-2 text-muted-foreground hover:text-destructive shrink-0 p-1">
+                                <X className="w-3 h-3" />
+                              </button>
+                            </button>
+                          ))}
+                        </div>
+                      );
+                    })()}
 
                     {/* Add new address */}
                     {showAddForm ? (

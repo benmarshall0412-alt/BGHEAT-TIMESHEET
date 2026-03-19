@@ -1,4 +1,4 @@
-import type { TimeEntry, InsertTimeEntry, User, InsertUser, SavedAddress, InsertAddress, LeaveRequest, InsertLeaveRequest } from "@shared/schema";
+import type { TimeEntry, InsertTimeEntry, User, InsertUser, SavedAddress, InsertAddress, LeaveRequest, InsertLeaveRequest, DaySession, InsertDaySession, GpsWaypoint, InsertGpsWaypoint } from "@shared/schema";
 import Database from "better-sqlite3";
 import path from "path";
 import fs from "fs";
@@ -36,6 +36,18 @@ export interface IStorage {
   updateLeaveRequestStatus(id: number, status: string, reviewedBy: string): Promise<LeaveRequest | undefined>;
   cancelLeaveRequest(id: number): Promise<LeaveRequest | undefined>;
   getApprovedLeaveDays(userId: number, year: string): Promise<number>;
+
+  // Day sessions
+  createDaySession(session: InsertDaySession): Promise<DaySession>;
+  getActiveDaySession(userId: number): Promise<DaySession | undefined>;
+  endDaySession(id: number, endTime: string, totalMinutes: number, endLat?: string, endLng?: string): Promise<DaySession | undefined>;
+  getDaySessionsByDate(userId: number, date: string): Promise<DaySession[]>;
+  getDaySessionById(id: number): Promise<DaySession | undefined>;
+  getAllDaySessionsForDate(date: string): Promise<DaySession[]>;
+
+  // GPS waypoints
+  createGpsWaypoint(wp: InsertGpsWaypoint): Promise<GpsWaypoint>;
+  getWaypointsBySession(daySessionId: number): Promise<GpsWaypoint[]>;
 }
 
 /** Map a raw SQLite row (snake_case, integer booleans) to a TimeEntry */
@@ -56,6 +68,7 @@ function rowToTimeEntry(row: any): TimeEntry {
     startLng: row.start_lng ?? null,
     endLat: row.end_lat ?? null,
     endLng: row.end_lng ?? null,
+    daySessionId: row.day_session_id ?? null,
   };
 }
 
@@ -69,17 +82,28 @@ function rowToAddress(row: any): SavedAddress {
 
 function rowToLeaveRequest(row: any): LeaveRequest {
   return {
-    id: row.id,
-    userId: row.user_id,
-    employeeName: row.employee_name,
-    leaveType: row.leave_type,
-    startDate: row.start_date,
-    endDate: row.end_date,
-    totalDays: row.total_days,
-    reason: row.reason ?? null,
-    status: row.status,
-    reviewedBy: row.reviewed_by ?? null,
-    createdAt: row.created_at,
+    id: row.id, userId: row.user_id, employeeName: row.employee_name,
+    leaveType: row.leave_type, startDate: row.start_date, endDate: row.end_date,
+    totalDays: row.total_days, reason: row.reason ?? null, status: row.status,
+    reviewedBy: row.reviewed_by ?? null, createdAt: row.created_at,
+  };
+}
+
+function rowToDaySession(row: any): DaySession {
+  return {
+    id: row.id, userId: row.user_id, employeeName: row.employee_name,
+    date: row.date, startTime: row.start_time, endTime: row.end_time ?? null,
+    totalMinutes: row.total_minutes ?? null, isActive: row.is_active === 1,
+    startLat: row.start_lat ?? null, startLng: row.start_lng ?? null,
+    endLat: row.end_lat ?? null, endLng: row.end_lng ?? null,
+  };
+}
+
+function rowToGpsWaypoint(row: any): GpsWaypoint {
+  return {
+    id: row.id, daySessionId: row.day_session_id, userId: row.user_id,
+    timestamp: row.timestamp, eventType: row.event_type, label: row.label ?? null,
+    lat: row.lat, lng: row.lng,
   };
 }
 
@@ -125,6 +149,7 @@ export class SqliteStorage implements IStorage {
         start_lng TEXT,
         end_lat TEXT,
         end_lng TEXT,
+        day_session_id INTEGER,
         FOREIGN KEY (user_id) REFERENCES users(id)
       );
 
@@ -150,19 +175,47 @@ export class SqliteStorage implements IStorage {
         FOREIGN KEY (user_id) REFERENCES users(id)
       );
 
+      CREATE TABLE IF NOT EXISTS day_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        employee_name TEXT NOT NULL,
+        date TEXT NOT NULL,
+        start_time TEXT NOT NULL,
+        end_time TEXT,
+        total_minutes INTEGER,
+        is_active INTEGER DEFAULT 1,
+        start_lat TEXT,
+        start_lng TEXT,
+        end_lat TEXT,
+        end_lng TEXT,
+        FOREIGN KEY (user_id) REFERENCES users(id)
+      );
+
+      CREATE TABLE IF NOT EXISTS gps_waypoints (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        day_session_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        timestamp TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        label TEXT,
+        lat TEXT NOT NULL,
+        lng TEXT NOT NULL,
+        FOREIGN KEY (day_session_id) REFERENCES day_sessions(id)
+      );
+
       CREATE INDEX IF NOT EXISTS idx_entries_user_date ON time_entries(user_id, date);
       CREATE INDEX IF NOT EXISTS idx_entries_date ON time_entries(date);
       CREATE INDEX IF NOT EXISTS idx_entries_running ON time_entries(user_id, is_running);
       CREATE INDEX IF NOT EXISTS idx_leave_user ON leave_requests(user_id);
       CREATE INDEX IF NOT EXISTS idx_leave_status ON leave_requests(status);
+      CREATE INDEX IF NOT EXISTS idx_day_sessions_user ON day_sessions(user_id, date);
+      CREATE INDEX IF NOT EXISTS idx_day_sessions_active ON day_sessions(user_id, is_active);
+      CREATE INDEX IF NOT EXISTS idx_gps_session ON gps_waypoints(day_session_id);
     `);
 
-    // Migration: add holiday_allowance column if it doesn't exist
-    try {
-      this.db.prepare("SELECT holiday_allowance FROM users LIMIT 1").get();
-    } catch {
-      this.db.exec("ALTER TABLE users ADD COLUMN holiday_allowance INTEGER DEFAULT 28");
-    }
+    // Migrations for existing databases
+    try { this.db.prepare("SELECT holiday_allowance FROM users LIMIT 1").get(); } catch { this.db.exec("ALTER TABLE users ADD COLUMN holiday_allowance INTEGER DEFAULT 28"); }
+    try { this.db.prepare("SELECT day_session_id FROM time_entries LIMIT 1").get(); } catch { this.db.exec("ALTER TABLE time_entries ADD COLUMN day_session_id INTEGER"); }
   }
 
   private seedAdmin() {
@@ -174,9 +227,10 @@ export class SqliteStorage implements IStorage {
 
   // ===== USERS =====
   async createUser(user: InsertUser): Promise<User> {
+    const ha = user.role === "subcontractor" ? 0 : (user.holidayAllowance ?? 28);
     const stmt = this.db.prepare("INSERT INTO users (name, email, password, role, holiday_allowance) VALUES (?, ?, ?, ?, ?)");
-    const result = stmt.run(user.name, user.email, user.password, user.role ?? "engineer", user.holidayAllowance ?? 28);
-    return { id: Number(result.lastInsertRowid), name: user.name, email: user.email, password: user.password, role: user.role ?? "engineer", holidayAllowance: user.holidayAllowance ?? 28 };
+    const result = stmt.run(user.name, user.email, user.password, user.role ?? "engineer", ha);
+    return { id: Number(result.lastInsertRowid), name: user.name, email: user.email, password: user.password, role: user.role ?? "engineer", holidayAllowance: ha };
   }
 
   async getUserByEmail(email: string): Promise<User | undefined> {
@@ -212,7 +266,6 @@ export class SqliteStorage implements IStorage {
   }
 
   async deleteUser(id: number): Promise<boolean> {
-    // Don't delete if there are time entries — just soft-check
     const result = this.db.prepare("DELETE FROM users WHERE id = ?").run(id);
     return result.changes > 0;
   }
@@ -232,8 +285,8 @@ export class SqliteStorage implements IStorage {
 
   async createTimeEntry(entry: InsertTimeEntry): Promise<TimeEntry> {
     const stmt = this.db.prepare(`
-      INSERT INTO time_entries (user_id, employee_name, date, category, site_name, notes, start_time, end_time, duration_minutes, is_running, start_lat, start_lng, end_lat, end_lng)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO time_entries (user_id, employee_name, date, category, site_name, notes, start_time, end_time, duration_minutes, is_running, start_lat, start_lng, end_lat, end_lng, day_session_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const result = stmt.run(
       entry.userId, entry.employeeName, entry.date, entry.category,
@@ -241,7 +294,8 @@ export class SqliteStorage implements IStorage {
       entry.endTime ?? null, entry.durationMinutes ?? null,
       entry.isRunning ? 1 : 0,
       entry.startLat ?? null, entry.startLng ?? null,
-      entry.endLat ?? null, entry.endLng ?? null
+      entry.endLat ?? null, entry.endLng ?? null,
+      entry.daySessionId ?? null
     );
     return {
       id: Number(result.lastInsertRowid),
@@ -251,6 +305,7 @@ export class SqliteStorage implements IStorage {
       durationMinutes: entry.durationMinutes ?? null, isRunning: entry.isRunning ?? false,
       startLat: entry.startLat ?? null, startLng: entry.startLng ?? null,
       endLat: entry.endLat ?? null, endLng: entry.endLng ?? null,
+      daySessionId: entry.daySessionId ?? null,
     };
   }
 
@@ -265,6 +320,7 @@ export class SqliteStorage implements IStorage {
       siteName: "site_name", notes: "notes", startTime: "start_time", endTime: "end_time",
       durationMinutes: "duration_minutes", isRunning: "is_running",
       startLat: "start_lat", startLng: "start_lng", endLat: "end_lat", endLng: "end_lng",
+      daySessionId: "day_session_id",
     };
     for (const [key, col] of Object.entries(fieldMap)) {
       if (key in entry) {
@@ -277,7 +333,6 @@ export class SqliteStorage implements IStorage {
 
     values.push(id);
     this.db.prepare(`UPDATE time_entries SET ${fields.join(", ")} WHERE id = ?`).run(...values);
-
     const updated = this.db.prepare("SELECT * FROM time_entries WHERE id = ?").get(id) as any;
     return rowToTimeEntry(updated);
   }
@@ -359,7 +414,7 @@ export class SqliteStorage implements IStorage {
   async cancelLeaveRequest(id: number): Promise<LeaveRequest | undefined> {
     const existing = this.db.prepare("SELECT * FROM leave_requests WHERE id = ?").get(id) as any;
     if (!existing) return undefined;
-    if (existing.status !== "pending") return undefined; // Can only cancel pending
+    if (existing.status !== "pending") return undefined;
     this.db.prepare("UPDATE leave_requests SET status = 'cancelled' WHERE id = ?").run(id);
     const updated = this.db.prepare("SELECT * FROM leave_requests WHERE id = ?").get(id) as any;
     return rowToLeaveRequest(updated);
@@ -368,10 +423,74 @@ export class SqliteStorage implements IStorage {
   async getApprovedLeaveDays(userId: number, year: string): Promise<number> {
     const row = this.db.prepare(`
       SELECT COALESCE(SUM(total_days), 0) as total
-      FROM leave_requests
-      WHERE user_id = ? AND status = 'approved' AND start_date LIKE ?
+      FROM leave_requests WHERE user_id = ? AND status = 'approved' AND start_date LIKE ?
     `).get(userId, `${year}%`) as any;
     return row?.total ?? 0;
+  }
+
+  // ===== DAY SESSIONS =====
+  async createDaySession(session: InsertDaySession): Promise<DaySession> {
+    const stmt = this.db.prepare(`
+      INSERT INTO day_sessions (user_id, employee_name, date, start_time, end_time, total_minutes, is_active, start_lat, start_lng, end_lat, end_lng)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const result = stmt.run(
+      session.userId, session.employeeName, session.date, session.startTime,
+      session.endTime ?? null, session.totalMinutes ?? null, session.isActive ? 1 : 1,
+      session.startLat ?? null, session.startLng ?? null,
+      session.endLat ?? null, session.endLng ?? null
+    );
+    return {
+      id: Number(result.lastInsertRowid),
+      userId: session.userId, employeeName: session.employeeName, date: session.date,
+      startTime: session.startTime, endTime: session.endTime ?? null,
+      totalMinutes: session.totalMinutes ?? null, isActive: true,
+      startLat: session.startLat ?? null, startLng: session.startLng ?? null,
+      endLat: session.endLat ?? null, endLng: session.endLng ?? null,
+    };
+  }
+
+  async getActiveDaySession(userId: number): Promise<DaySession | undefined> {
+    const row = this.db.prepare("SELECT * FROM day_sessions WHERE user_id = ? AND is_active = 1 LIMIT 1").get(userId) as any;
+    return row ? rowToDaySession(row) : undefined;
+  }
+
+  async endDaySession(id: number, endTime: string, totalMinutes: number, endLat?: string, endLng?: string): Promise<DaySession | undefined> {
+    this.db.prepare("UPDATE day_sessions SET end_time = ?, total_minutes = ?, is_active = 0, end_lat = ?, end_lng = ? WHERE id = ?")
+      .run(endTime, totalMinutes, endLat ?? null, endLng ?? null, id);
+    const row = this.db.prepare("SELECT * FROM day_sessions WHERE id = ?").get(id) as any;
+    return row ? rowToDaySession(row) : undefined;
+  }
+
+  async getDaySessionsByDate(userId: number, date: string): Promise<DaySession[]> {
+    return (this.db.prepare("SELECT * FROM day_sessions WHERE user_id = ? AND date = ? ORDER BY start_time").all(userId, date) as any[]).map(rowToDaySession);
+  }
+
+  async getDaySessionById(id: number): Promise<DaySession | undefined> {
+    const row = this.db.prepare("SELECT * FROM day_sessions WHERE id = ?").get(id) as any;
+    return row ? rowToDaySession(row) : undefined;
+  }
+
+  async getAllDaySessionsForDate(date: string): Promise<DaySession[]> {
+    return (this.db.prepare("SELECT * FROM day_sessions WHERE date = ? ORDER BY employee_name, start_time").all(date) as any[]).map(rowToDaySession);
+  }
+
+  // ===== GPS WAYPOINTS =====
+  async createGpsWaypoint(wp: InsertGpsWaypoint): Promise<GpsWaypoint> {
+    const stmt = this.db.prepare(`
+      INSERT INTO gps_waypoints (day_session_id, user_id, timestamp, event_type, label, lat, lng)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+    const result = stmt.run(wp.daySessionId, wp.userId, wp.timestamp, wp.eventType, wp.label ?? null, wp.lat, wp.lng);
+    return {
+      id: Number(result.lastInsertRowid),
+      daySessionId: wp.daySessionId, userId: wp.userId, timestamp: wp.timestamp,
+      eventType: wp.eventType, label: wp.label ?? null, lat: wp.lat, lng: wp.lng,
+    };
+  }
+
+  async getWaypointsBySession(daySessionId: number): Promise<GpsWaypoint[]> {
+    return (this.db.prepare("SELECT * FROM gps_waypoints WHERE day_session_id = ? ORDER BY timestamp").all(daySessionId) as any[]).map(rowToGpsWaypoint);
   }
 }
 

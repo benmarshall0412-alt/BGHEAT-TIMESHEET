@@ -53,9 +53,11 @@ function AppRoutes() {
       <Route path="/settings">
         <SettingsPage user={user} onUpdateUser={handleUpdateUser} />
       </Route>
-      <Route path="/leave">
-        <LeavePage user={user} />
-      </Route>
+      {user.role !== "subcontractor" && (
+        <Route path="/leave">
+          <LeavePage user={user} />
+        </Route>
+      )}
       <Route component={NotFound} />
     </Switch>
   );
