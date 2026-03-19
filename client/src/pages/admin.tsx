@@ -13,7 +13,7 @@ import { PerplexityAttribution } from "@/components/PerplexityAttribution";
 import {
   ChevronLeft, ChevronRight, Download, Flame, LogOut, Clock,
   ClipboardCheck, HardHat, Wrench, Settings, Phone, PhoneOff,
-  Truck, ShoppingBag, MapPin, ArrowLeft, Users, FileSpreadsheet,
+  Truck, ShoppingBag, MapPin, ArrowLeft, Users, FileSpreadsheet, GraduationCap,
   UserPlus, Trash2, KeyRound, CheckCircle2, XCircle, TreePalm, Edit, Save, X,
   Activity, Eye, PlayCircle, StopCircle, Navigation, Map as MapIcon, FileText, CalendarDays, Printer
 } from "lucide-react";
@@ -31,6 +31,7 @@ const categoryIcons: Record<string, React.ReactNode> = {
   "Out of Hours Call Out": <PhoneOff className="w-3.5 h-3.5" />,
   "Travel Time": <Truck className="w-3.5 h-3.5" />,
   "At the Merchants": <ShoppingBag className="w-3.5 h-3.5" />,
+  "Training": <GraduationCap className="w-3.5 h-3.5" />,
 };
 
 const categoryColors: Record<string, string> = {
@@ -42,6 +43,7 @@ const categoryColors: Record<string, string> = {
   "Out of Hours Call Out": "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300",
   "Travel Time": "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300",
   "At the Merchants": "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300",
+  "Training": "bg-indigo-100 text-indigo-800 dark:bg-indigo-900/30 dark:text-indigo-300",
 };
 
 const statusStyles: Record<string, string> = {
@@ -1098,6 +1100,7 @@ function UsersTab({ user }: { user: AuthUser }) {
                   <SelectTrigger data-testid="select-invite-role"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="engineer">Engineer</SelectItem>
+                    <SelectItem value="apprentice">Apprentice</SelectItem>
                     <SelectItem value="subcontractor">Subcontractor</SelectItem>
                     <SelectItem value="admin">Admin</SelectItem>
                   </SelectContent>
@@ -1167,10 +1170,11 @@ function UsersTab({ user }: { user: AuthUser }) {
                   <Input value={editEmail} onChange={e => setEditEmail(e.target.value)} placeholder="Email" data-testid="input-edit-email" />
                 </div>
                 <div className="grid grid-cols-2 gap-3">
-                  <Select value={editRole} onValueChange={(v) => { setEditRole(v); if (v === "subcontractor") setEditHoliday("0"); }}>
+                  <Select value={editRole} onValueChange={(v) => { setEditRole(v); if (v === "subcontractor") setEditHoliday("0"); else if (editHoliday === "0") setEditHoliday("28"); }}>
                     <SelectTrigger data-testid="select-edit-role"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="engineer">Engineer</SelectItem>
+                      <SelectItem value="apprentice">Apprentice</SelectItem>
                       <SelectItem value="subcontractor">Subcontractor</SelectItem>
                       <SelectItem value="admin">Admin</SelectItem>
                     </SelectContent>
@@ -1211,7 +1215,7 @@ function UsersTab({ user }: { user: AuthUser }) {
                   <div>
                     <div className="flex items-center gap-2">
                       <p className="font-medium text-sm">{u.name}</p>
-                      <Badge variant={u.role === "admin" ? "default" : u.role === "subcontractor" ? "outline" : "secondary"} className="text-xs">{u.role}</Badge>
+                      <Badge variant={u.role === "admin" ? "default" : u.role === "subcontractor" ? "outline" : "secondary"} className={`text-xs ${u.role === "apprentice" ? "bg-indigo-100 text-indigo-800 dark:bg-indigo-900/30 dark:text-indigo-300" : ""}`}>{u.role}</Badge>
                     </div>
                     <p className="text-xs text-muted-foreground">{u.email}</p>
                     {u.role !== "subcontractor" && <p className="text-xs text-muted-foreground">{u.holidayAllowance} days holiday/year</p>}

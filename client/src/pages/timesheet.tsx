@@ -12,7 +12,7 @@ import {
   ClipboardCheck, HardHat, Wrench, Settings, Phone, PhoneOff,
   Truck, ShoppingBag, Trash2, Navigation, LogOut, Shield, Flame,
   Plus, BookMarked, X, Check, TreePalm, User, Search,
-  Sun, Moon, Map as MapIcon
+  Sun, Moon, Map as MapIcon, GraduationCap
 } from "lucide-react";
 import { format, addDays, subDays, startOfWeek, endOfWeek } from "date-fns";
 import { Link } from "wouter";
@@ -29,6 +29,7 @@ const categoryIcons: Record<string, React.ReactNode> = {
   "Out of Hours Call Out": <PhoneOff className="w-4 h-4" />,
   "Travel Time": <Truck className="w-4 h-4" />,
   "At the Merchants": <ShoppingBag className="w-4 h-4" />,
+  "Training": <GraduationCap className="w-4 h-4" />,
 };
 
 const categoryColors: Record<string, string> = {
@@ -40,6 +41,7 @@ const categoryColors: Record<string, string> = {
   "Out of Hours Call Out": "bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-300",
   "Travel Time": "bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-300",
   "At the Merchants": "bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300",
+  "Training": "bg-indigo-100 text-indigo-800 dark:bg-indigo-900/30 dark:text-indigo-300",
 };
 
 function formatDuration(minutes: number | null): string {
@@ -62,7 +64,7 @@ function getGPS(): Promise<{ lat: string; lng: string } | null> {
 export default function TimesheetPage({ user, onLogout }: { user: AuthUser; onLogout: () => void }) {
   const { toast } = useToast();
   const [selectedDate, setSelectedDate] = useState(new Date());
-  const [selectedCategory, setSelectedCategory] = useState<ActivityCategory>("Installation");
+  const [selectedCategory, setSelectedCategory] = useState<ActivityCategory>(user.role === "apprentice" ? "Training" : "Installation");
   const [siteName, setSiteName] = useState("");
   const [notes, setNotes] = useState("");
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
@@ -75,6 +77,14 @@ export default function TimesheetPage({ user, onLogout }: { user: AuthUser; onLo
   const [showJourney, setShowJourney] = useState(false);
 
   const isSubcontractor = user.role === "subcontractor";
+  const isApprentice = user.role === "apprentice";
+
+  // Apprentices only see a limited set of categories
+  const apprenticeAllowedCategories: ActivityCategory[] = ["Travel Time", "At the Merchants", "Training"];
+  const visibleCategories = isApprentice
+    ? activityCategories.filter(c => apprenticeAllowedCategories.includes(c))
+    : activityCategories;
+
   const dateStr = format(selectedDate, "yyyy-MM-dd");
   const displayDate = format(selectedDate, "EEEE, d MMMM yyyy");
   const isToday = format(new Date(), "yyyy-MM-dd") === dateStr;
@@ -287,6 +297,7 @@ export default function TimesheetPage({ user, onLogout }: { user: AuthUser; onLo
             {!isSubcontractor && (
               <Link href="/leave"><button className="flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-primary/10 text-primary" data-testid="link-leave"><TreePalm className="w-3 h-3" /> Leave</button></Link>
             )}
+            {/* Apprentices don't see admin */}
             {user.role === "admin" && (
               <Link href="/admin"><button className="flex items-center gap-1 text-xs px-2 py-1 rounded-full bg-primary/10 text-primary" data-testid="link-admin"><Shield className="w-3 h-3" /> Admin</button></Link>
             )}
@@ -395,7 +406,7 @@ export default function TimesheetPage({ user, onLogout }: { user: AuthUser; onLo
               <div className="space-y-3">
                 <label className="text-sm font-medium">Activity</label>
                 <div className="grid grid-cols-2 gap-2">
-                  {activityCategories.map(cat => (
+                  {visibleCategories.map(cat => (
                     <button key={cat} onClick={() => setSelectedCategory(cat)}
                       className={`flex items-center gap-2 px-3 py-2.5 rounded-lg border text-sm font-medium transition-all ${selectedCategory === cat ? "border-primary bg-primary/10 text-primary" : "border-border hover:border-primary/40 text-foreground"}`}
                       data-testid={`button-category-${cat.toLowerCase().replace(/\s/g, "-")}`}>

@@ -11,11 +11,12 @@ export const activityCategories = [
   "Out of Hours Call Out",
   "Travel Time",
   "At the Merchants",
+  "Training",
 ] as const;
 
 export type ActivityCategory = (typeof activityCategories)[number];
 
-export const userRoles = ["admin", "engineer", "subcontractor"] as const;
+export const userRoles = ["admin", "engineer", "subcontractor", "apprentice"] as const;
 export type UserRole = (typeof userRoles)[number];
 
 export const leaveTypes = [
@@ -124,7 +125,7 @@ export const registerSchema = z.object({
   name: z.string().min(1),
   email: z.string().email(),
   password: z.string().min(4),
-  role: z.enum(["admin", "engineer", "subcontractor"]).default("engineer"),
+  role: z.enum(["admin", "engineer", "subcontractor", "apprentice"]).default("engineer"),
 });
 
 export const changePasswordSchema = z.object({
