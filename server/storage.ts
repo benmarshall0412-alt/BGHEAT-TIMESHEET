@@ -12,6 +12,7 @@ export interface IStorage {
   updateUserPassword(id: number, newPassword: string): Promise<boolean>;
   updateUser(id: number, data: { name?: string; email?: string; role?: string; holidayAllowance?: number }): Promise<User | undefined>;
   deleteUser(id: number): Promise<boolean>;
+  getUserDataSummary(id: number): Promise<{ timeEntries: number; daySessions: number; leaveRequests: number }>;
   resetUserPassword(id: number, newPassword: string): Promise<boolean>;
 
   // Time entries
@@ -269,8 +270,20 @@ export class SqliteStorage implements IStorage {
   }
 
   async deleteUser(id: number): Promise<boolean> {
+    // Delete all related data first (cascade)
+    this.db.prepare("DELETE FROM gps_waypoints WHERE user_id = ?").run(id);
+    this.db.prepare("DELETE FROM time_entries WHERE user_id = ?").run(id);
+    this.db.prepare("DELETE FROM day_sessions WHERE user_id = ?").run(id);
+    this.db.prepare("DELETE FROM leave_requests WHERE user_id = ?").run(id);
     const result = this.db.prepare("DELETE FROM users WHERE id = ?").run(id);
     return result.changes > 0;
+  }
+
+  async getUserDataSummary(id: number): Promise<{ timeEntries: number; daySessions: number; leaveRequests: number }> {
+    const te = (this.db.prepare("SELECT COUNT(*) as c FROM time_entries WHERE user_id = ?").get(id) as any)?.c || 0;
+    const ds = (this.db.prepare("SELECT COUNT(*) as c FROM day_sessions WHERE user_id = ?").get(id) as any)?.c || 0;
+    const lr = (this.db.prepare("SELECT COUNT(*) as c FROM leave_requests WHERE user_id = ?").get(id) as any)?.c || 0;
+    return { timeEntries: te, daySessions: ds, leaveRequests: lr };
   }
 
   async resetUserPassword(id: number, newPassword: string): Promise<boolean> {

@@ -113,7 +113,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ message: "Password reset successfully" });
   });
 
-  // Admin: delete user
+  // Admin: get user data summary (before delete)
+  app.get("/api/users/:id/data-summary", async (req, res) => {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });
+    const summary = await storage.getUserDataSummary(id);
+    res.json(summary);
+  });
+
+  // Admin: delete user (cascades all their data)
   app.delete("/api/users/:id", async (req, res) => {
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });

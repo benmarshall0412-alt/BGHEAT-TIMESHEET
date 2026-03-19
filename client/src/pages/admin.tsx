@@ -969,6 +969,9 @@ function UsersTab({ user }: { user: AuthUser }) {
   const [editRole, setEditRole] = useState("");
   const [editHoliday, setEditHoliday] = useState("");
 
+  const [deleteConfirm, setDeleteConfirm] = useState<{ id: number; name: string; summary: { timeEntries: number; daySessions: number; leaveRequests: number } | null } | null>(null);
+  const [loadingSummary, setLoadingSummary] = useState(false);
+
   const [resetPwUser, setResetPwUser] = useState<number | null>(null);
   const [resetPwValue, setResetPwValue] = useState("");
 
@@ -1033,10 +1036,24 @@ function UsersTab({ user }: { user: AuthUser }) {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/users"] });
-      toast({ title: "User deleted" });
+      setDeleteConfirm(null);
+      toast({ title: "User deleted", description: "User and all their data has been removed." });
     },
-    onError: (err: any) => toast({ title: "Error", description: err.message, variant: "destructive" }),
+    onError: (err: any) => { setDeleteConfirm(null); toast({ title: "Error", description: err.message, variant: "destructive" }); },
   });
+
+  const handleDeleteClick = async (u: UserInfo) => {
+    setLoadingSummary(true);
+    setDeleteConfirm({ id: u.id, name: u.name, summary: null });
+    try {
+      const r = await apiRequest("GET", `/api/users/${u.id}/data-summary`);
+      const summary = await r.json();
+      setDeleteConfirm({ id: u.id, name: u.name, summary });
+    } catch {
+      setDeleteConfirm({ id: u.id, name: u.name, summary: { timeEntries: 0, daySessions: 0, leaveRequests: 0 } });
+    }
+    setLoadingSummary(false);
+  };
 
   const startEdit = (u: UserInfo) => {
     setEditingUser(u.id);
@@ -1096,6 +1113,48 @@ function UsersTab({ user }: { user: AuthUser }) {
             </Button>
           </form>
         </Card>
+      )}
+
+      {/* Delete confirmation dialog */}
+      {deleteConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setDeleteConfirm(null)}>
+          <Card className="w-[90%] max-w-md p-6 space-y-4" onClick={e => e.stopPropagation()} data-testid="dialog-delete-confirm">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center">
+                <Trash2 className="w-5 h-5 text-red-600" />
+              </div>
+              <div>
+                <h3 className="font-semibold">Delete {deleteConfirm.name}?</h3>
+                <p className="text-sm text-muted-foreground">This action cannot be undone.</p>
+              </div>
+            </div>
+            {deleteConfirm.summary ? (
+              <div className="bg-red-50 dark:bg-red-950/30 rounded-lg p-3 space-y-1">
+                <p className="text-sm font-medium text-red-800 dark:text-red-300">The following data will also be deleted:</p>
+                <ul className="text-sm text-red-700 dark:text-red-400 space-y-0.5 ml-4 list-disc">
+                  <li>{deleteConfirm.summary.timeEntries} time {deleteConfirm.summary.timeEntries === 1 ? "entry" : "entries"}</li>
+                  <li>{deleteConfirm.summary.daySessions} day {deleteConfirm.summary.daySessions === 1 ? "session" : "sessions"}</li>
+                  <li>{deleteConfirm.summary.leaveRequests} leave {deleteConfirm.summary.leaveRequests === 1 ? "request" : "requests"}</li>
+                </ul>
+              </div>
+            ) : (
+              <div className="h-20 flex items-center justify-center"><span className="text-sm text-muted-foreground">Loading data summary...</span></div>
+            )}
+            <div className="flex gap-2 justify-end">
+              <Button variant="outline" size="sm" onClick={() => setDeleteConfirm(null)} data-testid="button-cancel-delete">
+                Cancel
+              </Button>
+              <Button
+                variant="destructive" size="sm"
+                disabled={!deleteConfirm.summary || deleteMutation.isPending}
+                onClick={() => deleteMutation.mutate(deleteConfirm.id)}
+                data-testid="button-confirm-delete"
+              >
+                {deleteMutation.isPending ? "Deleting..." : "Delete User & Data"}
+              </Button>
+            </div>
+          </Card>
+        </div>
       )}
 
       <div className="space-y-3">
@@ -1166,7 +1225,7 @@ function UsersTab({ user }: { user: AuthUser }) {
                     <KeyRound className="w-3.5 h-3.5" />
                   </Button>
                   {u.id !== user.id && (
-                    <Button variant="ghost" size="icon" className="h-8 w-8 text-red-600 hover:text-red-700 hover:bg-red-50" onClick={() => deleteMutation.mutate(u.id)} data-testid={`button-delete-${u.id}`}>
+                    <Button variant="ghost" size="icon" className="h-8 w-8 text-red-600 hover:text-red-700 hover:bg-red-50" onClick={() => handleDeleteClick(u)} data-testid={`button-delete-${u.id}`}>
                       <Trash2 className="w-3.5 h-3.5" />
                     </Button>
                   )}
